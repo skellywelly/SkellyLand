@@ -527,35 +527,18 @@ class Simulation:
             # Clear remaining organisms from collapsed population
             self.organisms.clear()
 
-            # Spawn 40 new organisms with ejection velocity to spread them out
-            spawn_center_x = WORLD_WIDTH / 2
-            spawn_center_y = WORLD_HEIGHT / 2
-            for i in range(40):
-                # Spread in a circle around center
-                angle = (2 * math.pi * i) / 40
-                distance = random.uniform(50, 150)
-                x = spawn_center_x + math.cos(angle) * distance
-                y = spawn_center_y + math.sin(angle) * distance
-                # Wrap around world bounds
-                x = x % WORLD_WIDTH
-                y = y % WORLD_HEIGHT
+            # Spawn 40 new organisms at random positions with random velocities to prevent clumping
+            for _ in range(40):
+                # Random position across the entire world
+                x = random.uniform(0, WORLD_WIDTH)
+                y = random.uniform(0, WORLD_HEIGHT)
                 new_org = Organism(x, y)
                 
-                # Eject with velocity away from center
-                dx = x - spawn_center_x
-                dy = y - spawn_center_y
-                dist = math.sqrt(dx * dx + dy * dy)
-                if dist > 0:
-                    dir_x = dx / dist
-                    dir_y = dy / dist
-                else:
-                    dir_x = math.cos(angle)
-                    dir_y = math.sin(angle)
-                
-                # Ejection velocity (30-80 pixels/second)
-                ejection_speed = random.uniform(30.0, 80.0)
-                new_org.vx = dir_x * ejection_speed
-                new_org.vy = dir_y * ejection_speed
+                # Random velocity in random direction to prevent clustering
+                ejection_speed = random.uniform(40.0, 100.0)
+                random_angle = random.uniform(0, 2 * math.pi)
+                new_org.vx = math.cos(random_angle) * ejection_speed
+                new_org.vy = math.sin(random_angle) * ejection_speed
                 
                 self.organisms.append(new_org)
 
