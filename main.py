@@ -24,7 +24,7 @@ BACKGROUND_COLOR = (20, 30, 50)
 FOOD_COLOR = (100, 200, 100)
 
 # Neural Network Constants
-INPUT_SIZE = 17  # Number of input neurons (sensors) - increased for toxicity and mate quality sensing
+INPUT_SIZE = 19  # Number of input neurons (sensors) - increased for toxicity, mate quality, and overcrowding
 # OUTPUT_SIZE is now variable: flagella_count + 3 (turn_left, turn_right, reproduction)
 
 class NeuralNetwork:
@@ -188,6 +188,9 @@ class DNA:
             self.aggression = random.uniform(0, 1)
             self.reproduction_desire = random.uniform(0, 1)  # Desire to mate (0 = low, 1 = high)
             self.toxicity_resistance = random.uniform(0, 1)  # Resistance to toxic food (0 = none, 1 = full)
+            self.min_mating_age = random.uniform(10, 30)  # Minimum age in seconds before can mate (10-30 seconds)
+            self.overcrowding_threshold_base = random.uniform(3, 10)  # Base threshold for overcrowding (organism count)
+            self.overcrowding_distance_base = random.uniform(50, 300)  # Base distance to check for overcrowding
             # Neural network architecture (DNA-controlled)
             self.nn_hidden_layers = random.randint(1, 3)  # Number of hidden layers
             self.nn_neurons_per_layer = random.randint(4, 12)  # Neurons per hidden layer
@@ -230,6 +233,9 @@ class DNA:
         self.aggression = parent.aggression
         self.reproduction_desire = parent.reproduction_desire
         self.toxicity_resistance = parent.toxicity_resistance
+        self.min_mating_age = parent.min_mating_age
+        self.overcrowding_threshold_base = parent.overcrowding_threshold_base
+        self.overcrowding_distance_base = parent.overcrowding_distance_base
         self.nn_hidden_layers = parent.nn_hidden_layers
         self.nn_neurons_per_layer = parent.nn_neurons_per_layer
         self.nn_learning_rate = parent.nn_learning_rate
@@ -272,6 +278,9 @@ class DNA:
         self.aggression = (parent1.aggression + parent2.aggression) / 2
         self.reproduction_desire = (parent1.reproduction_desire + parent2.reproduction_desire) / 2
         self.toxicity_resistance = (parent1.toxicity_resistance + parent2.toxicity_resistance) / 2
+        self.min_mating_age = (parent1.min_mating_age + parent2.min_mating_age) / 2
+        self.overcrowding_threshold_base = (parent1.overcrowding_threshold_base + parent2.overcrowding_threshold_base) / 2
+        self.overcrowding_distance_base = (parent1.overcrowding_distance_base + parent2.overcrowding_distance_base) / 2
         self.nn_hidden_layers = random.choice([parent1.nn_hidden_layers, parent2.nn_hidden_layers])
         self.nn_neurons_per_layer = random.choice([parent1.nn_neurons_per_layer, parent2.nn_neurons_per_layer])
         self.nn_learning_rate = (parent1.nn_learning_rate + parent2.nn_learning_rate) / 2
@@ -371,6 +380,15 @@ class DNA:
         
         if random.random() < mutation_rate:
             self.toxicity_resistance = np.clip(self.toxicity_resistance + random.uniform(-0.2, 0.2), 0, 1)
+        
+        if random.random() < mutation_rate:
+            self.min_mating_age = np.clip(self.min_mating_age + random.uniform(-2, 2), 5, 40)  # Can mutate between 5-40 seconds
+        
+        if random.random() < mutation_rate:
+            self.overcrowding_threshold_base = np.clip(self.overcrowding_threshold_base + random.uniform(-1, 1), 2, 15)
+        
+        if random.random() < mutation_rate:
+            self.overcrowding_distance_base = np.clip(self.overcrowding_distance_base + random.uniform(-20, 20), 30, 400)
         
         if random.random() < mutation_rate:
             self.nn_hidden_layers = int(np.clip(self.nn_hidden_layers + random.randint(-1, 1), 1, 4))
@@ -491,9 +509,9 @@ class Organism:
         self._death_cause = None  # Track cause of death for statistics
         
         # Neural network (DNA-controlled architecture)
-        # Output size: turn_left, turn_right, flagella_count outputs, mate, fight, run, chase, feed, avoid_toxic, reproduction
-        # Total: 2 + flagella_count + 7 = flagella_count + 9
-        output_size = self.dna.flagella_count + 9
+        # Output size: turn_left, turn_right, flagella_count outputs, mate, fight, run, chase, feed, avoid_toxic, reproduction, overcrowding_threshold_mod, overcrowding_distance_mod
+        # Total: 2 + flagella_count + 9 = flagella_count + 11
+        output_size = self.dna.flagella_count + 11
         self.brain = NeuralNetwork(
             hidden_layers=self.dna.nn_hidden_layers,
             neurons_per_layer=self.dna.nn_neurons_per_layer,
@@ -669,9 +687,35 @@ class Organism:
         inputs[15] = nearest_org_speed  # Nearest organism's speed (0-1) - mate quality indicator
         inputs[16] = nearest_org_complexity  # Nearest organism's shape complexity (0-1) - mate quality indicator
         
+        # Overcrowding detection - count nearby organisms
+        nearby_count = 0
+        if hasattr(self, 'overcrowding_distance'):
+            check_distance = self.overcrowding_distance
+        else:
+            check_distance = self.dna.overcrowding_distance_base if hasattr(self.dna, 'overcrowding_distance_base') else 150.0
+        
+        for org in organisms:
+            if org is self:
+                continue
+            dx = org.x - self.x
+            dy = org.y - self.y
+            distance = math.sqrt(dx * dx + dy * dy)
+            if distance <= check_distance:
+                nearby_count += 1
+        
+        # Normalize nearby count (assume max 20 organisms nearby is "very crowded")
+        inputs[17] = min(nearby_count / 20.0, 1.0)  # Normalized nearby organism count (0-1)
+        
+        # Overcrowding status (1.0 if overcrowded, 0.0 if not)
+        if hasattr(self, 'is_overcrowded'):
+            inputs[18] = 1.0 if self.is_overcrowded else 0.0
+        else:
+            inputs[18] = 0.0
+        
         # Note: Energy level (inputs[6]) already provides information about fullness
         # The neural network can learn to avoid food when energy is high (close to 1.0)
         # The neural network can learn to seek mates with high energy, speed, and complexity
+        # The neural network can learn to fight more when overcrowded (inputs[17] and inputs[18])
         
         return inputs
     
@@ -952,6 +996,20 @@ class Organism:
         self.neural_feed = outputs[base_idx + 4] > 0.0  # Feed decision
         self.neural_avoid_toxic = outputs[base_idx + 5] > 0.0  # Avoid toxic food decision
         self.neural_reproduction = outputs[base_idx + 6] > 0.0  # Reproduction decision
+        
+        # Overcrowding detection parameters (neural network + DNA influence)
+        # Neural outputs are in [-1, 1], convert to modifiers
+        overcrowding_threshold_modifier = outputs[base_idx + 7]  # -1 to 1
+        overcrowding_distance_modifier = outputs[base_idx + 8]  # -1 to 1
+        
+        # Combine neural network output with DNA base values
+        # Modifier range: -0.5 to +0.5 (50% variation from base)
+        threshold_mod = 1.0 + overcrowding_threshold_modifier * 0.5
+        distance_mod = 1.0 + overcrowding_distance_modifier * 0.5
+        
+        # Calculate actual threshold and distance
+        self.overcrowding_threshold = max(2, int(self.dna.overcrowding_threshold_base * threshold_mod))
+        self.overcrowding_distance = max(30, self.dna.overcrowding_distance_base * distance_mod)
         
         # Average flagella activity for overall movement
         avg_flagella_activity = sum(flagella_activities) / len(flagella_activities) if flagella_activities else 0.3
@@ -1270,6 +1328,25 @@ class Organism:
         
         return False
     
+    def _check_overcrowding(self, organisms: List['Organism']):
+        """Check if the area around this organism is overcrowded."""
+        if not hasattr(self, 'overcrowding_threshold') or not hasattr(self, 'overcrowding_distance'):
+            # Not initialized yet (neural network hasn't run)
+            self.is_overcrowded = False
+            return
+        
+        nearby_count = 0
+        for org in organisms:
+            if org is self:
+                continue
+            dx = org.x - self.x
+            dy = org.y - self.y
+            distance = math.sqrt(dx * dx + dy * dy)
+            if distance <= self.overcrowding_distance:
+                nearby_count += 1
+        
+        self.is_overcrowded = nearby_count >= self.overcrowding_threshold
+    
     def _interact_with_organisms(self, organisms: List['Organism'], dt: float) -> Optional[str]:
         """Handle interactions with nearby organisms: fight or mate. Returns 'died' if this organism died."""
         interaction_range = self.size * 2.5  # Range for interactions
@@ -1323,14 +1400,29 @@ class Organism:
                 # Neural network decides: fight, mate, run, or chase
                 # Both organisms must be close enough
                 if distance < self.size * 1.5:  # Very close = collision
-                    # Check neural network decisions
-                    if hasattr(self, 'neural_run') and self.neural_run:
-                        # Neural network decided to run away - move away from organism
-                        # This is handled in movement, but we can exit interaction
-                        continue
+                    # When organisms meet, they MUST interact - either fight or mate
+                    # Fighting only happens if BOTH want to fight, otherwise default to mating
                     
-                    if hasattr(self, 'neural_fight') and self.neural_fight and (not hasattr(org, 'neural_fight') or org.neural_fight):
-                        # Neural network decided to fight (if other is also willing or not avoiding)
+                    # Check for overcrowding - increases fight probability
+                    self._check_overcrowding(organisms)
+                    org._check_overcrowding(organisms)
+                    
+                    # Overcrowding makes organisms more likely to fight
+                    # If overcrowded, increase fight probability
+                    self_fight_probability = 1.0 if (hasattr(self, 'neural_fight') and self.neural_fight) else 0.0
+                    org_fight_probability = 1.0 if (hasattr(org, 'neural_fight') and org.neural_fight) else 0.0
+                    
+                    # Increase fight probability if overcrowded
+                    if hasattr(self, 'is_overcrowded') and self.is_overcrowded:
+                        self_fight_probability = min(1.0, self_fight_probability + 0.6)  # Strong boost
+                    if hasattr(org, 'is_overcrowded') and org.is_overcrowded:
+                        org_fight_probability = min(1.0, org_fight_probability + 0.6)  # Strong boost
+                    
+                    # Check if both organisms want to fight (mutual aggression, including overcrowding boost)
+                    both_want_fight = (self_fight_probability > 0.5 and org_fight_probability > 0.5)
+                    
+                    if both_want_fight:
+                        # Both want to fight - engage in combat
                         self.in_combat = True
                         self.combat_target = org
                         org.in_combat = True
@@ -1339,42 +1431,37 @@ class Organism:
                         org.last_interaction = 0.0
                         # Track fight (will be done in Simulation class)
                         return self._fight_organism(org, dt)
-                    elif (hasattr(self, 'neural_mate') and self.neural_mate) or (hasattr(org, 'neural_mate') and org.neural_mate):
-                        # At least one organism wants to mate (more lenient - allows one-sided initiation)
-                        # But don't mate if either is fighting
-                        if (hasattr(self, 'neural_fight') and self.neural_fight) or (hasattr(org, 'neural_fight') and org.neural_fight):
-                            continue
-                        
-                        # Check if both have enough energy and haven't mated recently
-                        if (self.energy > self.dna.reproduction_threshold and 
-                            org.energy > org.dna.reproduction_threshold and
-                            self.age - self.last_reproduction > 2.0 and
-                            org.age - org.last_reproduction > 2.0):
+                    else:
+                        # Default to mating (most of the time)
+                        # Only require basic conditions: enough energy, age, and cooldown period
+                        # Ensure parents have enough energy to survive mating (need at least 40 energy to mate safely)
+                        # This accounts for energy cost (up to 18 for 3 offspring) + safety margin
+                        min_energy_for_mating = 40.0  # Minimum energy needed to survive mating
+                        # Use DNA-defined minimum mating age for each organism
+                        if (self.energy > min_energy_for_mating and
+                            org.energy > min_energy_for_mating and
+                            self.age >= self.dna.min_mating_age and  # Must be old enough (DNA-defined)
+                            org.age >= org.dna.min_mating_age and
+                            self.age - self.last_reproduction > 1.5 and  # Shorter cooldown (1.5s instead of 2.0s)
+                            org.age - org.last_reproduction > 1.5):
+                            # Mate - this is the default behavior when organisms meet
                             self._mate_with_organism(org, organisms)
                             self.last_interaction = 0.0
                             org.last_interaction = 0.0
                             # Track mating (will be done in Simulation class)
                             return None
-                    
-                    # Fallback: if organisms are close, have high reproduction_desire, and enough energy, allow mating
-                    # This ensures mating can happen even if neural network hasn't learned yet
-                    if (self.dna.reproduction_desire > 0.7 and org.dna.reproduction_desire > 0.7 and
-                        self.energy > self.dna.reproduction_threshold and 
-                        org.energy > org.dna.reproduction_threshold and
-                        self.age - self.last_reproduction > 2.0 and
-                        org.age - org.last_reproduction > 2.0 and
-                        not (hasattr(self, 'neural_fight') and self.neural_fight) and
-                        not (hasattr(org, 'neural_fight') and org.neural_fight)):
-                        # High reproduction desire + enough energy = allow mating
-                        self._mate_with_organism(org, organisms)
-                        self.last_interaction = 0.0
-                        org.last_interaction = 0.0
-                        return None
-                    
-                    # If neural network wants to chase, continue approaching (handled in movement)
-                    if hasattr(self, 'neural_chase') and self.neural_chase:
-                        # Continue approaching - movement will handle this
-                        pass
+                        else:
+                            # Can't mate yet (cooldown or low energy) - push apart to prevent spinning
+                            # Push organisms apart slightly
+                            if distance > 0:
+                                push_force = 30.0
+                                push_x = (dx / distance) * push_force * dt
+                                push_y = (dy / distance) * push_force * dt
+                                self.x -= push_x
+                                self.y -= push_y
+                                org.x += push_x
+                                org.y += push_y
+                            continue
         
         return None
     
@@ -1420,6 +1507,12 @@ class Organism:
                 return 'died'
             
             if opponent.energy <= 0:
+                # Winner gains energy from defeating opponent
+                # Gain energy based on opponent's size and remaining energy (before death)
+                # Larger opponents provide more energy
+                energy_gain = opponent.size * 0.5 + min(opponent.energy + opponent_damage, 30)  # Gain from size + opponent's energy (capped)
+                self.energy = min(self.energy + energy_gain, self.max_energy)  # Cap at max energy
+                
                 if opponent.in_combat and opponent.combat_target == self:
                     opponent.in_combat = False
                     opponent.combat_target = None
@@ -1455,12 +1548,15 @@ class Organism:
         partner.last_mate_quality = (self.energy / self.max_energy * 0.8 + self_speed_norm * 0.6 + self_complexity * 0.6) / 2.0
         partner.last_mated = True
         
-        # Sexual reproduction - produce multiple offspring (1-3) with different DNA mixes
+        # Sexual reproduction - produce multiple offspring (3-5) with different DNA mixes
         # Number of offspring based on parents' energy and reproduction desire
         energy_factor = (self.energy / self.max_energy + partner.energy / partner.max_energy) / 2.0
         desire_factor = (self.dna.reproduction_desire + partner.dna.reproduction_desire) / 2.0
-        # Higher energy and desire = more offspring (1-3)
-        num_offspring = random.choices([1, 2, 3], weights=[0.4, 0.4, 0.2 + energy_factor * 0.3 + desire_factor * 0.3])[0]
+        # Higher energy and desire = more offspring (3-5)
+        # Base is 3, can go up to 5 with high energy and desire
+        base_offspring = 3
+        bonus_offspring = random.choices([0, 1, 2], weights=[0.3, 0.5, 0.2 + energy_factor * 0.3 + desire_factor * 0.3])[0]
+        num_offspring = base_offspring + bonus_offspring
         
         # Get parent weights once for reuse
         parent1_weights = self.brain.get_weights_copy()
@@ -1479,7 +1575,18 @@ class Organism:
             distance = random.uniform(20, 50)  # Distance from center
             new_x = (self.x + partner.x) / 2 + math.cos(angle) * distance
             new_y = (self.y + partner.y) / 2 + math.sin(angle) * distance
+            # Wrap around world bounds
+            new_x = new_x % WORLD_WIDTH
+            new_y = new_y % WORLD_HEIGHT
             new_org = Organism(new_x, new_y, new_dna)
+            
+            # Give new organism a random initial velocity
+            # Random direction and speed (0.5 to 2.0 times the parent's average max_speed)
+            parent_avg_max_speed = (self.dna.max_speed + partner.dna.max_speed) / 2.0
+            initial_speed = random.uniform(0.5, 2.0) * parent_avg_max_speed
+            initial_angle = random.uniform(0, 2 * math.pi)
+            new_org.vx = math.cos(initial_angle) * initial_speed
+            new_org.vy = math.sin(initial_angle) * initial_speed
             
             # Inherit neural network weights with variation for each offspring
             if architectures_compatible:
@@ -1514,13 +1621,20 @@ class Organism:
                 # If architectures don't match, just use child's randomly initialized weights
                 pass
             
+            # Ensure we're adding to the correct list (should be self.organisms from Simulation)
+            # Add new organism to the list - this is the same reference as self.organisms
             organisms.append(new_org)
         
         # Both parents lose energy proportional to number of offspring (but survive)
-        energy_cost_per_offspring = 20
+        # Ensure parents don't die from mating - leave them with at least 20 energy (safety margin)
+        energy_cost_per_offspring = 12  # Further reduced from 15
         total_energy_cost = energy_cost_per_offspring * num_offspring
-        self.energy -= total_energy_cost / 2  # Split cost between parents
-        partner.energy -= total_energy_cost / 2
+        cost_per_parent = total_energy_cost / 2
+        
+        # Deduct energy but ensure parents survive (minimum 20 energy after mating for safety)
+        # This accounts for metabolism that will be deducted in the same frame
+        self.energy = max(20.0, self.energy - cost_per_parent)
+        partner.energy = max(20.0, partner.energy - cost_per_parent)
         self.last_reproduction = self.age
         partner.last_reproduction = partner.age
     
@@ -1914,6 +2028,11 @@ class Simulation:
         new_org_ids = org_ids_after - org_ids_before
         new_organisms_this_frame = [org for org in self.organisms if id(org) in new_org_ids]
         
+        # Debug: verify births are being detected
+        if len(new_org_ids) > 0:
+            if self.show_terminal_output:
+                print(f"DEBUG: Detected {len(new_org_ids)} new organisms. Total organisms: {len(self.organisms)} (was {org_count_before})")
+        
         # Track births and estimate matings
         births = len(new_organisms_this_frame)
         if births > 0:
@@ -1963,12 +2082,8 @@ class Simulation:
         if len(self.foods) < 20:  # Lower threshold, spawn less frequently
             self._spawn_food(5)  # Spawn fewer food at a time (will respect cap)
         
-        # Update camera - follow events if alert is active, otherwise follow center of mass
-        if self.current_alert is not None:
-            # Move camera to event location
-            alert_x, alert_y = self.current_alert[3], self.current_alert[4]
-            self.camera.move_to(alert_x, alert_y, speed=0.15)  # Faster movement for events
-        elif self.camera_follow_enabled and self.organisms:
+        # Update camera - follow center of mass (don't move camera for events, just point at them)
+        if self.camera_follow_enabled and self.organisms:
             avg_x = sum(org.x for org in self.organisms) / len(self.organisms)
             avg_y = sum(org.y for org in self.organisms) / len(self.organisms)
             self.camera.update(avg_x, avg_y)
@@ -1992,7 +2107,7 @@ class Simulation:
             self.monitor_timer = 0.0
     
     def _create_alert(self, message: str, color: Tuple[int, int, int], x: float, y: float):
-        """Create an alert for a major event and move camera to it."""
+        """Create an alert for a major event (points at location but doesn't move camera)."""
         self.current_alert = (message, color, self.alert_duration, x, y)
     
     def _print_comprehensive_monitoring_stats(self, deaths: int, total_energy: float, total_speed: float, avg_age: float):
@@ -2224,12 +2339,48 @@ class Simulation:
             # Draw alert text
             self.screen.blit(alert_text, (alert_x_pos, alert_y_pos))
             
-            # Draw a line from alert text to event location (if on screen)
+            # Draw indicator pointing to event location
+            center_x = alert_x_pos + text_rect.width // 2
+            center_y = alert_y_pos + text_rect.height
+            
             if 0 <= alert_sx < screen_width and 0 <= alert_sy < screen_height:
-                pygame.draw.line(self.screen, color, (alert_x_pos + text_rect.width // 2, alert_y_pos + text_rect.height), 
-                               (alert_sx, alert_sy), 2)
+                # Event is on screen - draw line and circle
+                pygame.draw.line(self.screen, color, (center_x, center_y), (alert_sx, alert_sy), 2)
                 # Draw a circle at event location
                 pygame.draw.circle(self.screen, color, (alert_sx, alert_sy), 10, 2)
+            else:
+                # Event is off screen - draw arrow pointing in the direction
+                # Calculate direction from screen center to event
+                screen_center_x = screen_width // 2
+                screen_center_y = screen_height // 2
+                dx = alert_sx - screen_center_x
+                dy = alert_sy - screen_center_y
+                distance = math.sqrt(dx * dx + dy * dy)
+                
+                if distance > 0:
+                    # Normalize and scale to edge of screen
+                    edge_distance = min(screen_width, screen_height) * 0.4
+                    dir_x = dx / distance
+                    dir_y = dy / distance
+                    edge_x = screen_center_x + dir_x * edge_distance
+                    edge_y = screen_center_y + dir_y * edge_distance
+                    
+                    # Draw line from alert to edge
+                    pygame.draw.line(self.screen, color, (center_x, center_y), (int(edge_x), int(edge_y)), 2)
+                    
+                    # Draw arrowhead at edge
+                    arrow_size = 15
+                    perp_x = -dir_y
+                    perp_y = dir_x
+                    arrow1_x = int(edge_x - dir_x * arrow_size + perp_x * arrow_size * 0.5)
+                    arrow1_y = int(edge_y - dir_y * arrow_size + perp_y * arrow_size * 0.5)
+                    arrow2_x = int(edge_x - dir_x * arrow_size - perp_x * arrow_size * 0.5)
+                    arrow2_y = int(edge_y - dir_y * arrow_size - perp_y * arrow_size * 0.5)
+                    pygame.draw.polygon(self.screen, color, [
+                        (int(edge_x), int(edge_y)),
+                        (arrow1_x, arrow1_y),
+                        (arrow2_x, arrow2_y)
+                    ])
         
         # Draw UI
         info_text = [
