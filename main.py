@@ -24,7 +24,10 @@ BACKGROUND_COLOR = (20, 30, 50)
 FOOD_COLOR = (100, 200, 100)
 
 # Neural Network Constants
-INPUT_SIZE = 34  # Number of input neurons (sensors) - comprehensive environmental awareness
+INPUT_SIZE = 38  # Number of input neurons (sensors) - comprehensive environmental awareness + cooperative behaviors
+
+# Movement Constants
+MAX_SPEED_CAP = 300.0  # Absolute maximum speed limit for all organisms (pixels per second)
 # OUTPUT_SIZE is now variable: flagella_count + 3 (turn_left, turn_right, reproduction)
 
 class NeuralNetwork:
@@ -188,13 +191,16 @@ class DNA:
             self.aggression = random.uniform(0, 1)
             self.reproduction_desire = random.uniform(0, 1)  # Desire to mate (0 = low, 1 = high)
             self.toxicity_resistance = random.uniform(0, 1)  # Resistance to toxic food (0 = none, 1 = full)
-            self.min_mating_age = random.uniform(10, 30)  # Minimum age in seconds before can mate (10-30 seconds)
+            self.min_mating_age = random.uniform(20, 45)  # Minimum age in seconds before can mate (20-45 seconds)
             self.overcrowding_threshold_base = random.uniform(3, 10)  # Base threshold for overcrowding (organism count)
             self.overcrowding_distance_base = random.uniform(50, 300)  # Base distance to check for overcrowding
             # Neural network architecture (DNA-controlled)
             self.nn_hidden_layers = random.randint(1, 3)  # Number of hidden layers
             self.nn_neurons_per_layer = random.randint(4, 12)  # Neurons per hidden layer
             self.nn_learning_rate = random.uniform(0.01, 0.1)  # Learning rate
+            # Cooperative behavior traits
+            self.cooperative_hunting = random.uniform(0, 1)  # Tendency to hunt cooperatively (0 = solo, 1 = highly cooperative)
+            self.cooperative_mating = random.uniform(0, 1)  # Tendency to mate cooperatively (0 = solo, 1 = highly cooperative)
         else:
             # Combine parent DNA with mutation
             if parent2_dna is None:
@@ -239,6 +245,8 @@ class DNA:
         self.nn_hidden_layers = parent.nn_hidden_layers
         self.nn_neurons_per_layer = parent.nn_neurons_per_layer
         self.nn_learning_rate = parent.nn_learning_rate
+        self.cooperative_hunting = parent.cooperative_hunting
+        self.cooperative_mating = parent.cooperative_mating
     
     def _combine_parents(self, parent1: 'DNA', parent2: 'DNA'):
         """Combine traits from two parents (randomly choose or average)."""
@@ -284,6 +292,8 @@ class DNA:
         self.nn_hidden_layers = random.choice([parent1.nn_hidden_layers, parent2.nn_hidden_layers])
         self.nn_neurons_per_layer = random.choice([parent1.nn_neurons_per_layer, parent2.nn_neurons_per_layer])
         self.nn_learning_rate = (parent1.nn_learning_rate + parent2.nn_learning_rate) / 2
+        self.cooperative_hunting = (parent1.cooperative_hunting + parent2.cooperative_hunting) / 2
+        self.cooperative_mating = (parent1.cooperative_mating + parent2.cooperative_mating) / 2
     
     def _mutate(self):
         """Apply random mutations to DNA."""
@@ -382,7 +392,7 @@ class DNA:
             self.toxicity_resistance = np.clip(self.toxicity_resistance + random.uniform(-0.2, 0.2), 0, 1)
         
         if random.random() < mutation_rate:
-            self.min_mating_age = np.clip(self.min_mating_age + random.uniform(-2, 2), 5, 40)  # Can mutate between 5-40 seconds
+            self.min_mating_age = np.clip(self.min_mating_age + random.uniform(-3, 3), 15, 60)  # Can mutate between 15-60 seconds
         
         if random.random() < mutation_rate:
             self.overcrowding_threshold_base = np.clip(self.overcrowding_threshold_base + random.uniform(-1, 1), 2, 15)
@@ -398,6 +408,12 @@ class DNA:
         
         if random.random() < mutation_rate:
             self.nn_learning_rate = np.clip(self.nn_learning_rate + random.uniform(-0.02, 0.02), 0.005, 0.2)
+
+        if random.random() < mutation_rate:
+            self.cooperative_hunting = np.clip(self.cooperative_hunting + random.uniform(-0.2, 0.2), 0, 1)
+
+        if random.random() < mutation_rate:
+            self.cooperative_mating = np.clip(self.cooperative_mating + random.uniform(-0.2, 0.2), 0, 1)
 
 class Food:
     """Food particles in the environment."""
@@ -513,9 +529,9 @@ class Organism:
         self._death_cause = None  # Track cause of death for statistics
         
         # Neural network (DNA-controlled architecture)
-        # Output size: turn_left, turn_right, flagella_count outputs, mate, fight, run, chase, feed, avoid_toxic, reproduction, overcrowding_threshold_mod, overcrowding_distance_mod, metabolic_rate_control, learning_rate_control
+        # Output size: turn_left, turn_right, flagella_count outputs, mate, fight, run, chase, feed, avoid_toxic, reproduction, overcrowding_threshold_mod, overcrowding_distance_mod, metabolic_rate_control, learning_rate_control, cooperative_hunt, cooperative_mate
         # Total: 2 + flagella_count + 11 = flagella_count + 13
-        output_size = self.dna.flagella_count + 13
+        output_size = self.dna.flagella_count + 15
         self.brain = NeuralNetwork(
             hidden_layers=self.dna.nn_hidden_layers,
             neurons_per_layer=self.dna.nn_neurons_per_layer,
@@ -593,7 +609,10 @@ class Organism:
         
         # Find target based on neural network decisions
         self._find_target(organisms, foods)
-        
+
+        # Perform cooperative behaviors
+        self._perform_cooperative_behaviors(organisms, dt)
+
         # Check for interactions with other organisms (fight or mate) - neural network controlled
         interaction_result = self._interact_with_organisms(organisms, dt)
         if interaction_result == 'died':
@@ -856,7 +875,44 @@ class Organism:
         inputs[25] = toxic_food_gradient  # Toxic food concentration gradient
         inputs[26] = front_avg_angle * 0.5 + 0.5  # Front region movement direction (normalized to [0, 1])
         inputs[27] = movement_flow_gradient  # Movement flow gradient between regions
-        inputs[28] = 0.0  # Reserved for future use
+
+        # Cooperative behavior inputs
+        # Check for cooperative hunting opportunities
+        cooperative_hunting_opportunity = 0.0
+        if nearest_org and nearest_org.size > self.size * 1.5:  # Prey is much larger than self
+            # Count nearby organisms that might help hunt
+            helper_count = 0
+            for org in organisms:
+                if org is self or org is nearest_org:
+                    continue
+                dx = org.x - self.x
+                dy = org.y - self.y
+                dist = math.sqrt(dx * dx + dy * dy)
+                if dist < self.dna.vision_range * 0.8:  # Within cooperative range
+                    # Check if this organism is also targeting the same prey or is aggressive
+                    if (hasattr(org, 'target') and org.target == nearest_org) or org.dna.aggression > 0.6:
+                        helper_count += 1
+            cooperative_hunting_opportunity = min(helper_count / 3.0, 1.0)  # Normalize to 0-1
+
+        # Check for cooperative mating opportunities
+        cooperative_mating_opportunity = 0.0
+        mating_orgs_nearby = 0
+        for org in organisms:
+            if org is self:
+                continue
+            dx = org.x - self.x
+            dy = org.y - self.y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist < self.dna.vision_range * 0.6:  # Closer range for mating cooperation
+                # Count organisms that might be seeking mates
+                if hasattr(org, 'neural_mate') and org.neural_mate and org.energy > org.dna.reproduction_threshold * 0.8:
+                    mating_orgs_nearby += 1
+        cooperative_mating_opportunity = min(mating_orgs_nearby / 2.0, 1.0)  # Normalize to 0-1
+
+        inputs[28] = cooperative_hunting_opportunity  # Cooperative hunting opportunity (0-1)
+        inputs[29] = cooperative_mating_opportunity  # Cooperative mating opportunity (0-1)
+        inputs[30] = self.dna.cooperative_hunting  # DNA cooperativeness for hunting (0-1)
+        inputs[31] = self.dna.cooperative_mating  # DNA cooperativeness for mating (0-1)
         
         # Note: Energy level (inputs[6]) already provides information about fullness
         # The neural network can learn to avoid food when energy is high (close to 1.0)
@@ -1063,13 +1119,47 @@ class Organism:
                         if should_seek_mate and nearest_org_dist_for_mating < self.dna.vision_range * 0.5:
                             reward += 0.2  # Bonus for being close to potential mates
         
+        # Reward for cooperative behaviors
+        if hasattr(self, 'neural_cooperative_hunt') and self.neural_cooperative_hunt:
+            # Reward for participating in cooperative hunting
+            # Check if we're targeting prey that others are also targeting
+            if self.target and hasattr(self.target, 'size'):
+                prey_size = self.target.size
+                self_size = self.size
+
+                # Reward for hunting prey larger than self (cooperative advantage)
+                if prey_size > self_size * 1.2:
+                    # Count how many others are hunting the same prey
+                    cooperative_partners = 0
+                    for org in organisms:
+                        if org is not self and hasattr(org, 'target') and org.target == self.target:
+                            cooperative_partners += 1
+
+                    # Reward increases with number of cooperative partners
+                    if cooperative_partners > 0:
+                        cooperation_reward = min(cooperative_partners * 0.3, 1.0)
+                        reward += cooperation_reward
+
+        if hasattr(self, 'neural_cooperative_mate') and self.neural_cooperative_mate:
+            # Reward for participating in cooperative mating assistance
+            # Check if we're facilitating mating by being near potential mates
+            nearby_mating_orgs = 0
+            for org in organisms:
+                if org is not self and math.sqrt((org.x - self.x)**2 + (org.y - self.y)**2) < self.dna.vision_range * 0.7:
+                    if hasattr(org, 'neural_mate') and org.neural_mate:
+                        nearby_mating_orgs += 1
+
+            # Small reward for being in position to assist mating
+            if nearby_mating_orgs >= 2:  # At least two organisms seeking mates nearby
+                reward += 0.2
+
         # Reset food tracking after reward calculation (so it doesn't carry over)
         # This will be set again if food is eaten in the next frame
         if self.last_food_eaten is not None:
             self.last_food_eaten = None
             self.last_food_was_toxic = False
             self.last_food_was_harmful = False
-        
+
         return reward
     
     def _backpropagate_success_failure(self):
@@ -1141,8 +1231,8 @@ class Organism:
         # Increased bias - organisms are much more likely to want to mate
         reproduction_desire_mult = getattr(self, '_temp_reproduction_desire_mult', 1.0)
         mate_bias = (self.dna.reproduction_desire * reproduction_desire_mult * 0.7 + (energy_ratio - 0.2) * 0.5)  # Apply global reproduction_desire multiplier
-        # Lower threshold - easier to trigger mate decision
-        self.neural_mate = (mate_output + mate_bias) > -0.5  # Even lower threshold to make mating more common
+        # Moderately permissive threshold - encourage mating but not excessively
+        self.neural_mate = (mate_output + mate_bias) > -0.8  # Moderate threshold for balanced mating
         
         self.neural_fight = outputs[base_idx + 1] > 0.4  # Fight decision - higher threshold to make fights rarer
         self.neural_run = outputs[base_idx + 2] > 0.0  # Run away decision
@@ -1155,6 +1245,10 @@ class Organism:
         # Neural outputs are in [-1, 1], convert to modifiers
         overcrowding_threshold_modifier = outputs[base_idx + 7]  # -1 to 1
         overcrowding_distance_modifier = outputs[base_idx + 8]  # -1 to 1
+
+        # Cooperative behavior decisions
+        self.neural_cooperative_hunt = outputs[base_idx + 9] > 0.0  # Cooperative hunting decision
+        self.neural_cooperative_mate = outputs[base_idx + 10] > 0.0  # Cooperative mating decision
         
         # Combine neural network output with DNA base values
         # Modifier range: -0.5 to +0.5 (50% variation from base)
@@ -1256,9 +1350,8 @@ class Organism:
         speed_multiplier = avg_flagella_activity * (1.2 + self.dna.flagella_length / 35.0) * (1.2 + self.dna.flagella_count / 3.5)  # Increased multipliers
         target_speed = base_speed * speed_multiplier * self.dna.propulsion_strength * 0.4 * flagella_mult  # Add propulsion_strength and global multiplier
         
-        # Don't let max_speed limit too much - scale it up
-        effective_max_speed = self.dna.max_speed * 25.0  # Scale up max_speed (increased from 20.0)
-        target_speed = min(target_speed, effective_max_speed)
+        # Apply absolute speed cap to prevent excessive movement
+        target_speed = min(target_speed, MAX_SPEED_CAP)
         
         # Calculate desired velocity
         desired_vx = math.cos(self.angle) * target_speed
@@ -1281,11 +1374,11 @@ class Organism:
         energy_cost = speed * 0.0005 * dt  # Reduced energy cost
         self.energy -= energy_cost
         
-        # Limit speed (but with scaled up max)
+        # Apply absolute speed cap to prevent excessive movement speeds
         speed = math.sqrt(self.vx * self.vx + self.vy * self.vy)
-        if speed > effective_max_speed:
-            self.vx = (self.vx / speed) * effective_max_speed
-            self.vy = (self.vy / speed) * effective_max_speed
+        if speed > MAX_SPEED_CAP:
+            self.vx = (self.vx / speed) * MAX_SPEED_CAP
+            self.vy = (self.vy / speed) * MAX_SPEED_CAP
         
         # Update position
         self.x += self.vx * dt
@@ -1554,7 +1647,7 @@ class Organism:
                 
                 # Neural network decides: fight, mate, run, or chase
                 # Both organisms must be close enough
-                if distance < self.size * 1.5:  # Very close = collision
+                if distance < self.size * 1.8:  # Moderately close = potential interaction
                     # When organisms meet, they MUST interact - either fight or mate
                     # Fighting only happens if BOTH want to fight, otherwise default to mating
                     
@@ -1592,14 +1685,27 @@ class Organism:
                         # Only require basic conditions: enough energy, age, and cooldown period
                         # Ensure parents have enough energy to survive mating (need at least 40 energy to mate safely)
                         # This accounts for energy cost (up to 18 for 3 offspring) + safety margin
-                        min_energy_for_mating = 25.0  # Lowered minimum energy needed to survive mating (was 40.0)
+                        min_energy_for_mating = 30.0  # Moderate energy requirement to prevent overbreeding
                         # Use DNA-defined minimum mating age for each organism
-                        if (self.energy > min_energy_for_mating and
-                            org.energy > min_energy_for_mating and
-                            self.age >= self.dna.min_mating_age and  # Must be old enough (DNA-defined)
-                            org.age >= org.dna.min_mating_age and
-                            self.age - self.last_reproduction > 1.5 and  # Shorter cooldown (1.5s instead of 2.0s)
-                            org.age - org.last_reproduction > 1.5):
+                        # Calculate mating viability score (0-1, higher = more likely to mate)
+                        age_ready_self = 1.0 if self.age >= self.dna.min_mating_age else 0.0
+                        age_ready_org = 1.0 if org.age >= org.dna.min_mating_age else 0.0
+
+                        energy_score_self = min(1.0, self.energy / min_energy_for_mating)
+                        energy_score_org = min(1.0, org.energy / min_energy_for_mating)
+
+                        cooldown_score_self = min(1.0, (self.age - self.last_reproduction) / 1.2)
+                        cooldown_score_org = min(1.0, (org.age - org.last_reproduction) / 1.2)
+
+                        # Hard requirement: both organisms must be at or above minimum mating age
+                        if self.age < self.dna.min_mating_age or org.age < org.dna.min_mating_age:
+                            mating_viability = 0.0  # Cannot mate if too young
+                        else:
+                            mating_viability = (age_ready_self + age_ready_org + energy_score_self + energy_score_org +
+                                              cooldown_score_self + cooldown_score_org) / 6.0
+
+                        # Mate if viability is high enough, or with low probability for moderate viability
+                        if mating_viability >= 0.9 or (mating_viability >= 0.6 and random.random() < mating_viability * 0.2):
                             # Mate - this is the default behavior when organisms meet
                             self._mate_with_organism(org, organisms)
                             self.last_interaction = 0.0
@@ -1607,10 +1713,10 @@ class Organism:
                             # Track mating (will be done in Simulation class)
                             return None
                         else:
-                            # Can't mate yet (cooldown or low energy) - push apart to prevent spinning
-                            # Push organisms apart slightly
+                            # Can't mate yet (cooldown or low energy) - gentle push to prevent constant collision
+                            # Much gentler push to allow organisms to meet again soon
                             if distance > 0:
-                                push_force = 30.0
+                                push_force = 10.0  # Much gentler push
                                 push_x = (dx / distance) * push_force * dt
                                 push_y = (dy / distance) * push_force * dt
                                 self.x -= push_x
@@ -1677,7 +1783,155 @@ class Organism:
                 return None
         
         return None
-    
+
+    def _perform_cooperative_behaviors(self, organisms: List['Organism'], dt: float):
+        """Perform cooperative behaviors: hunting and mating assistance."""
+        if not hasattr(self, 'neural_cooperative_hunt') or not hasattr(self, 'neural_cooperative_mate'):
+            return
+
+        # Cooperative hunting: help hunt larger prey
+        if self.neural_cooperative_hunt and self.dna.cooperative_hunting > 0.3:
+            self._assist_cooperative_hunt(organisms, dt)
+
+        # Cooperative mating: help find mates or protect mating pairs
+        if self.neural_cooperative_mate and self.dna.cooperative_mating > 0.3:
+            self._assist_cooperative_mating(organisms, dt)
+
+    def _assist_cooperative_hunt(self, organisms: List['Organism'], dt: float):
+        """Assist in cooperative hunting by helping to surround or distract larger prey."""
+        # Find potential prey that could benefit from cooperative hunting
+        potential_prey = None
+        helpers = []
+
+        for org in organisms:
+            if org is self:
+                continue
+
+            # Check if this organism is much larger (potential prey)
+            if org.size > self.size * 1.5:
+                # Count how many organisms are already targeting this prey
+                targeting_count = 0
+                for helper in organisms:
+                    if helper is not self and helper is not org:
+                        if (hasattr(helper, 'target') and helper.target == org) or \
+                           (hasattr(helper, 'neural_cooperative_hunt') and helper.neural_cooperative_hunt):
+                            targeting_count += 1
+
+                # If there are helpers and prey is large enough, join the hunt
+                if targeting_count >= 1 and org.energy > self.energy * 2:
+                    potential_prey = org
+                    # Find actual helpers
+                    for helper in organisms:
+                        if helper is not self and helper is not org and \
+                           ((hasattr(helper, 'target') and helper.target == org) or \
+                            (hasattr(helper, 'neural_cooperative_hunt') and helper.neural_cooperative_hunt)):
+                            helpers.append(helper)
+                    break
+
+        if potential_prey and len(helpers) >= 1:
+            # Join the cooperative hunt
+            self.target = potential_prey
+
+            # Position yourself strategically (try to flank or surround)
+            dx = potential_prey.x - self.x
+            dy = potential_prey.y - self.y
+            distance = math.sqrt(dx * dx + dy * dy)
+
+            if distance > 0:
+                # Try to position at an angle to the prey, away from other helpers
+                angle_to_prey = math.atan2(dy, dx)
+                best_angle = angle_to_prey
+
+                # Find angle with least helpers
+                min_helpers_at_angle = float('inf')
+                for test_angle in [angle_to_prey - math.pi/2, angle_to_prey + math.pi/2, angle_to_prey - math.pi, angle_to_prey]:
+                    helpers_at_angle = 0
+                    for helper in helpers:
+                        hx = helper.x - potential_prey.x
+                        hy = helper.y - potential_prey.y
+                        helper_angle = math.atan2(hy, hx)
+                        angle_diff = abs(helper_angle - test_angle)
+                        angle_diff = min(angle_diff, 2*math.pi - angle_diff)
+                        if angle_diff < math.pi/3:  # Within 60 degrees
+                            helpers_at_angle += 1
+
+                    if helpers_at_angle < min_helpers_at_angle:
+                        min_helpers_at_angle = helpers_at_angle
+                        best_angle = test_angle
+
+                # Move toward flanking position
+                flank_distance = potential_prey.size * 3
+                target_x = potential_prey.x + math.cos(best_angle) * flank_distance
+                target_y = potential_prey.y + math.sin(best_angle) * flank_distance
+
+                # Adjust position gradually, respecting speed cap
+                move_x = (target_x - self.x) * 0.1 * dt * 10
+                move_y = (target_y - self.y) * 0.1 * dt * 10
+
+                # Limit cooperative movement speed
+                move_speed = math.sqrt(move_x * move_x + move_y * move_y) / dt
+                if move_speed > MAX_SPEED_CAP:
+                    move_x = (move_x / move_speed) * MAX_SPEED_CAP * dt
+                    move_y = (move_y / move_speed) * MAX_SPEED_CAP * dt
+
+                self.x += move_x
+                self.y += move_y
+
+    def _assist_cooperative_mating(self, organisms: List['Organism'], dt: float):
+        """Assist in cooperative mating by helping find mates or protecting mating pairs."""
+        # Look for organisms that are seeking mates
+        for org in organisms:
+            if org is self:
+                continue
+
+            # Check if this organism wants to mate but hasn't found a partner
+            if hasattr(org, 'neural_mate') and org.neural_mate and org.energy > org.dna.reproduction_threshold * 0.8:
+                # Check if there are potential mates nearby that this organism could help attract
+                potential_mates = []
+                for mate_candidate in organisms:
+                    if mate_candidate is not self and mate_candidate is not org:
+                        dx = mate_candidate.x - org.x
+                        dy = mate_candidate.y - org.y
+                        distance = math.sqrt(dx * dx + dy * dy)
+
+                        if distance < self.dna.vision_range and \
+                           hasattr(mate_candidate, 'neural_mate') and mate_candidate.neural_mate and \
+                           mate_candidate.energy > mate_candidate.dna.reproduction_threshold * 0.8:
+                            potential_mates.append(mate_candidate)
+
+                if potential_mates:
+                    # Help by positioning near the potential mate to encourage interaction
+                    # or by moving the seeking organism toward potential mates
+                    closest_mate = min(potential_mates, key=lambda m: math.sqrt((m.x - org.x)**2 + (m.y - org.y)**2))
+
+                    # If the helper is closer to the potential mate, guide the seeker toward them
+                    dist_helper_to_mate = math.sqrt((closest_mate.x - self.x)**2 + (closest_mate.y - self.y)**2)
+                    dist_seeker_to_mate = math.sqrt((closest_mate.x - org.x)**2 + (closest_mate.y - org.y)**2)
+
+                    if dist_helper_to_mate < dist_seeker_to_mate:
+                        # Position between seeker and potential mate to facilitate introduction
+                        mid_x = (org.x + closest_mate.x) / 2
+                        mid_y = (org.y + closest_mate.y) / 2
+
+                        # Move toward the midpoint
+                        dx = mid_x - self.x
+                        dy = mid_y - self.y
+                        dist = math.sqrt(dx * dx + dy * dy)
+
+                        if dist > 5:
+                            move_x = dx / dist * 20 * dt
+                            move_y = dy / dist * 20 * dt
+
+                            # Limit cooperative movement speed
+                            move_speed = math.sqrt(move_x * move_x + move_y * move_y) / dt
+                            if move_speed > MAX_SPEED_CAP:
+                                move_x = (move_x / move_speed) * MAX_SPEED_CAP * dt
+                                move_y = (move_y / move_speed) * MAX_SPEED_CAP * dt
+
+                            self.x += move_x
+                            self.y += move_y
+                    break  # Only help one mating pair at a time
+
     def _mate_with_organism(self, partner: 'Organism', organisms: List['Organism']):
         """Mate with another organism to produce offspring."""
         # Calculate mate quality (for learning) - more lenient requirements
@@ -1928,6 +2182,207 @@ class Camera:
         self.x += dx
         self.y += dy
 
+class PopulationControllerAI:
+    """AI that learns to control simulation parameters for optimal population management."""
+
+    def __init__(self):
+        # Neural network for parameter control
+        # State: [population, population_trend, metabolism_mult, flagella_mult, aggression_mult, reproduction_mult]
+        # Actions: [metabolism_up/metabolism_down, flagella_up/flagella_down, aggression_up/aggression_down, reproduction_up/reproduction_down]
+        self.state_size = 6  # Current state features
+        self.action_size = 8  # 4 parameters × 2 actions (up/down)
+
+        # Neural network weights
+        self.weights = np.random.randn(self.state_size, self.action_size) * 0.1
+
+        # Learning parameters
+        self.learning_rate = 0.01
+        self.discount_factor = 0.95
+        self.epsilon = 0.1  # Exploration rate
+
+        # Experience replay
+        self.memory = []
+        self.max_memory = 1000
+
+        # Previous state and action for learning
+        self.prev_state = None
+        self.prev_actions = None
+
+    def get_state(self, simulation):
+        """Get current state representation."""
+        current_pop = len(simulation.organisms)
+
+        # Population trend (change over last minute)
+        if len(simulation.population_history) >= 6:
+            trend = current_pop - simulation.population_history[0]
+        else:
+            trend = 0
+
+        # Normalize values
+        pop_norm = current_pop / 100.0  # Normalize to 0-1 range (assuming max ~100)
+        trend_norm = np.tanh(trend / 20.0)  # Normalize trend
+
+        state = np.array([
+            pop_norm,  # Current population (0-1)
+            trend_norm,  # Population trend (-1 to 1)
+            simulation.metabolism_multiplier / 2.0,  # Current metabolism (normalized)
+            simulation.flagella_impulse_multiplier / 2.0,  # Current flagella power
+            simulation.aggression_multiplier / 2.0,  # Current aggression
+            simulation.reproduction_desire_multiplier / 2.0,  # Current reproduction desire
+        ])
+
+        return state
+
+    def choose_actions(self, state):
+        """Choose actions for each parameter using epsilon-greedy policy."""
+        if np.random.random() < self.epsilon:
+            # Random exploration
+            actions = np.random.choice([-1, 0, 1], size=4)  # -1=down, 0=stay, 1=up for each parameter
+        else:
+            # Greedy action selection
+            q_values = np.dot(state, self.weights)
+
+            # Convert Q-values to actions for each parameter (pairs of Q-values)
+            actions = np.zeros(4, dtype=int)
+            for i in range(4):  # 4 parameters
+                up_q = q_values[i*2]      # up action
+                down_q = q_values[i*2 + 1]  # down action
+
+                if up_q > down_q:
+                    actions[i] = 1   # up
+                elif down_q > up_q:
+                    actions[i] = -1  # down
+                else:
+                    actions[i] = 0   # stay
+
+        return actions
+
+    def apply_actions(self, simulation, actions):
+        """Apply the chosen actions to simulation parameters."""
+        adjustment = simulation.parameter_adjustment_rate
+
+        # Metabolism (index 0)
+        if actions[0] == 1:
+            simulation.metabolism_multiplier = min(1.5, simulation.metabolism_multiplier + adjustment)
+        elif actions[0] == -1:
+            simulation.metabolism_multiplier = max(0.5, simulation.metabolism_multiplier - adjustment)
+
+        # Flagella (index 1)
+        if actions[1] == 1:
+            simulation.flagella_impulse_multiplier = min(3.0, simulation.flagella_impulse_multiplier + adjustment)
+        elif actions[1] == -1:
+            simulation.flagella_impulse_multiplier = max(0.1, simulation.flagella_impulse_multiplier - adjustment)
+
+        # Aggression (index 2)
+        if actions[2] == 1:
+            simulation.aggression_multiplier = min(3.0, simulation.aggression_multiplier + adjustment)
+        elif actions[2] == -1:
+            simulation.aggression_multiplier = max(0.1, simulation.aggression_multiplier - adjustment)
+
+        # Reproduction (index 3)
+        if actions[3] == 1:
+            simulation.reproduction_desire_multiplier = min(2.0, simulation.reproduction_desire_multiplier + adjustment)
+        elif actions[3] == -1:
+            simulation.reproduction_desire_multiplier = max(0.3, simulation.reproduction_desire_multiplier - adjustment)
+
+        # Track changes for HUD
+        param_names = ['metabolism', 'flagella_impulse', 'aggression', 'reproduction']
+        for i, param in enumerate(param_names):
+            if actions[i] != 0:
+                simulation.last_parameter_changes[param] = simulation.total_time
+
+    def calculate_reward(self, simulation, prev_population, new_population):
+        """Calculate reward based on population change."""
+        reward = 0
+
+        # Base reward for population in target range
+        target_center = (simulation.target_population_min + simulation.target_population_max) / 2
+        distance_from_target = abs(new_population - target_center)
+        max_distance = max(target_center - simulation.target_population_min,
+                          simulation.target_population_max - target_center)
+
+        # Reward for being close to target (0-1 scale)
+        population_reward = max(0, 1.0 - (distance_from_target / max_distance))
+        reward += population_reward * 2.0  # Scale up
+
+        # Reward for population stability (not oscillating wildly)
+        if prev_population > 0:
+            stability_penalty = abs(new_population - prev_population) / max(prev_population, 1)
+            reward -= stability_penalty * 0.5  # Penalty for large swings
+
+        # Bonus for population growth when low
+        if prev_population < simulation.target_population_min and new_population > prev_population:
+            reward += 1.0
+
+        # Penalty for population decline when high
+        if prev_population > simulation.target_population_max and new_population < prev_population:
+            reward += 0.5
+
+        return reward
+
+    def learn(self, prev_state, actions, reward, new_state):
+        """Update neural network using Q-learning."""
+        if prev_state is None:
+            return
+
+        # Convert actions to Q-value indices
+        action_indices = []
+        for action in actions:
+            if action == 1:  # up
+                action_indices.extend([0, 1])  # Set up Q high, down Q low
+            elif action == -1:  # down
+                action_indices.extend([1, 0])  # Set down Q high, up Q low
+            else:  # stay
+                action_indices.extend([0.5, 0.5])  # Neutral
+
+        # Current Q-values
+        current_q = np.dot(prev_state, self.weights)
+
+        # Next Q-values (target)
+        next_q = np.dot(new_state, self.weights)
+        max_next_q = np.max([next_q[i*2:i*2+2] for i in range(4)], axis=1)  # Max Q for each parameter pair
+
+        # Target Q-values
+        target_q = current_q.copy()
+        for i in range(4):  # For each parameter
+            if actions[i] != 0:  # Only update if action was taken
+                action_idx = i * 2 + (0 if actions[i] == 1 else 1)
+                target_q[action_idx] = reward + self.discount_factor * max_next_q[i]
+
+        # Update weights
+        q_error = target_q - current_q
+        self.weights += self.learning_rate * np.outer(prev_state, q_error)
+
+        # Store experience
+        self.memory.append((prev_state, actions, reward, new_state))
+        if len(self.memory) > self.max_memory:
+            self.memory.pop(0)
+
+    def save_weights(self, filename="ai_controller_weights.npy"):
+        """Save learned weights to file."""
+        np.save(filename, self.weights)
+
+    def load_weights(self, filename="ai_controller_weights.npy"):
+        """Load learned weights from file."""
+        try:
+            self.weights = np.load(filename)
+            print(f"Loaded AI weights from {filename}")
+        except FileNotFoundError:
+            print(f"No saved weights found at {filename}, using random initialization")
+
+    def train_on_experience(self):
+        """Train on random experiences from memory."""
+        if len(self.memory) < 10:
+            return
+
+        # Train on random batch
+        batch_size = min(32, len(self.memory))
+        batch = random.sample(self.memory, batch_size)
+
+        for prev_state, actions, reward, new_state in batch:
+            self.learn(prev_state, actions, reward, new_state)
+
+
 class Simulation:
     """Main simulation class."""
     
@@ -1981,7 +2436,7 @@ class Simulation:
         font_dir = os.path.join(os.path.dirname(__file__), "fonts")
         dejavu_path = os.path.join(font_dir, "DejaVuSans.ttf")
         emoji_path = os.path.join(font_dir, "NotoColorEmoji.ttf")
-        alert_font_size = 20  # Reduced from 36 to make alerts smaller
+        alert_font_size = 12  # Much smaller for subtle alerts
         
         # Load text font
         try:
@@ -2028,6 +2483,21 @@ class Simulation:
         self.flagella_impulse_multiplier = 1.0
         self.aggression_multiplier = 1.0
         self.reproduction_desire_multiplier = 1.0
+
+        # Population monitoring and control
+        self.population_history = []  # Track population over time
+        self.population_control_timer = 0.0
+        self.population_control_interval = 10.0  # Adjust parameters every 10 seconds
+        self.target_population_min = 60  # Minimum target population (centered around 70)
+        self.target_population_max = 80  # Maximum target population (centered around 70)
+        self.parameter_adjustment_rate = 0.05  # How much to adjust parameters per cycle
+        self.last_parameter_changes = {}  # Track when parameters were last adjusted
+        self.ai_save_timer = 0.0
+        self.ai_save_interval = 300.0  # Save AI weights every 5 minutes
+
+        # AI Population Controller Neural Network
+        self.ai_controller = PopulationControllerAI()
+        self.ai_controller.load_weights()  # Load previously learned weights if available
         
         # Statistics counters (reset each interval)
         self.stats = {
@@ -2077,24 +2547,46 @@ class Simulation:
             self.organisms.append(Organism(x, y))
     
     def _reset_simulation(self):
-        """Reset the simulation to initial state."""
+        """Reset the simulation to initial state, including AI weights."""
         # Clear all organisms and food
         self.organisms.clear()
         self.foods.clear()
-        
+
         # Reset camera
         self.camera.x = WORLD_WIDTH / 2
         self.camera.y = WORLD_HEIGHT / 2
         self.camera.zoom = 0.3  # Start zoomed out more
-        
+
+        # Reset AI controller to random weights (forget learned behavior)
+        self.ai_controller = PopulationControllerAI()
+        print("🔄 Reset AI controller to random weights")
+
+        # Reset global parameters to defaults
+        self.metabolism_multiplier = 1.0
+        self.flagella_impulse_multiplier = 1.0
+        self.aggression_multiplier = 1.0
+        self.reproduction_desire_multiplier = 1.0
+
+        # Reset statistics
+        for key in self.stats:
+            self.stats[key] = 0
+        for key in self.cumulative_stats:
+            self.cumulative_stats[key] = 0
+
+        # Reset population monitoring
+        self.population_history.clear()
+        self.last_parameter_changes.clear()
+
         # Create initial organisms
         for _ in range(40):
             x = random.uniform(0, WORLD_WIDTH)
             y = random.uniform(0, WORLD_HEIGHT)
             self.organisms.append(Organism(x, y))
-        
+
         # Create initial food
         self._spawn_food(100)
+
+        print("🔄 Simulation completely reset (including AI learning)")
     
     def handle_events(self):
         """Handle pygame events."""
@@ -2120,6 +2612,10 @@ class Simulation:
                     if not self.alerts_enabled:
                         self.current_alert = None  # Clear current alert when disabling
                     print(f"Event alerts: {'ON' if self.alerts_enabled else 'OFF'}")
+                elif event.key == pygame.K_s:
+                    # Save AI weights manually
+                    self.ai_controller.save_weights()
+                    print("💾 Manually saved AI controller weights")
                 elif event.key == pygame.K_ESCAPE:
                     self.running = False
                 elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
@@ -2279,7 +2775,26 @@ class Simulation:
                 self.cumulative_stats['total_matings'] += 1
                 # Birth/Mating event - create alert at birth location
                 self._create_alert("👶 Birth!", (0, 255, 255), new_org.x, new_org.y)
-        
+
+        # Check for extinction - population reached zero
+        if len(self.organisms) == 0:
+            print("💀 EXTINCTION EVENT: Population reached zero!")
+            print("🌱 Respawning 40 new organisms to restart the ecosystem...")
+
+            # Create alert for extinction
+            self._create_alert("💀 EXTINCTION! Respawning...", (255, 0, 0), WORLD_WIDTH/2, WORLD_HEIGHT/2)
+
+            # Spawn 40 new organisms
+            for _ in range(40):
+                x = random.uniform(0, WORLD_WIDTH)
+                y = random.uniform(0, WORLD_HEIGHT)
+                self.organisms.append(Organism(x, y))
+
+            # Add some food to help the new population
+            self._spawn_food(50)
+
+            print(f"✅ Respawned 40 organisms. Population: {len(self.organisms)}")
+
         # Track food eaten
         food_count_after = len(self.foods)
         food_eaten_count = food_count_before - food_count_after
@@ -2336,6 +2851,20 @@ class Simulation:
             for key in self.stats:
                 self.stats[key] = 0
             self.monitor_timer = 0.0
+
+        # Population monitoring and control (every 10 seconds)
+        self.population_control_timer += dt
+        if self.population_control_timer >= self.population_control_interval:
+            self._control_population()
+            self.population_control_timer = 0.0
+
+        # Periodic AI weight saving (every 5 minutes)
+        self.ai_save_timer += dt
+        if self.ai_save_timer >= self.ai_save_interval:
+            self.ai_controller.save_weights()
+            if self.show_terminal_output:
+                print("💾 Saved AI controller weights")
+            self.ai_save_timer = 0.0
     
     def _update_communication_signals(self, dt: float):
         """Update signal propagation between organisms."""
@@ -2399,8 +2928,20 @@ class Simulation:
         ]
         
         for label, value, min_val, max_val in controls:
-            # Draw label
-            label_surface = self.font.render(f"{label}: {value:.2f}", True, (255, 255, 255))
+            # Draw label with auto-adjust indicator if recently changed
+            param_key = label.lower().replace(' ', '_')
+            if param_key == 'repro_desire':
+                param_key = 'reproduction'
+            elif param_key == 'flagella':
+                param_key = 'flagella_impulse'
+
+            recently_changed = (param_key in self.last_parameter_changes and
+                              self.total_time - self.last_parameter_changes[param_key] < 3.0)
+
+            if recently_changed:
+                label_surface = self.font.render(f"{label}: {value:.2f} 🔄", True, (100, 255, 100))
+            else:
+                label_surface = self.font.render(f"{label}: {value:.2f}", True, (255, 255, 255))
             self.screen.blit(label_surface, (x_start, y))
             
             # Draw - button
@@ -2659,7 +3200,52 @@ class Simulation:
         print(f"  FPS: {fps:.1f} | Zoom: {self.camera.zoom:.2f} | Camera: ({self.camera.x:.0f}, {self.camera.y:.0f})")
         
         print(f"{'='*100}\n")
-    
+
+    def _control_population(self):
+        """AI-driven population control using learned parameter adjustments."""
+        current_population = len(self.organisms)
+
+        # Track population history
+        prev_population = self.population_history[-1] if self.population_history else current_population
+        self.population_history.append(current_population)
+        if len(self.population_history) > 6:
+            self.population_history.pop(0)
+
+        # Get current state
+        current_state = self.ai_controller.get_state(self)
+
+        # Learn from previous action if we have previous state
+        if self.ai_controller.prev_state is not None:
+            reward = self.ai_controller.calculate_reward(self, prev_population, current_population)
+            self.ai_controller.learn(self.ai_controller.prev_state, self.ai_controller.prev_actions, reward, current_state)
+
+        # Choose new actions
+        actions = self.ai_controller.choose_actions(current_state)
+
+        # Apply actions
+        self.ai_controller.apply_actions(self, actions)
+
+        # Store current state and actions for next learning cycle
+        self.ai_controller.prev_state = current_state
+        self.ai_controller.prev_actions = actions
+
+        # Periodic experience replay training
+        if len(self.ai_controller.memory) >= 50 and random.random() < 0.3:
+            self.ai_controller.train_on_experience()
+
+        # Terminal output
+        if self.show_terminal_output:
+            action_names = []
+            if actions[0] != 0: action_names.append(f"Metabolism {'↑' if actions[0] == 1 else '↓'}")
+            if actions[1] != 0: action_names.append(f"Flagella {'↑' if actions[1] == 1 else '↓'}")
+            if actions[2] != 0: action_names.append(f"Aggression {'↑' if actions[2] == 1 else '↓'}")
+            if actions[3] != 0: action_names.append(f"Reproduction {'↑' if actions[3] == 1 else '↓'}")
+
+            if action_names:
+                print(f"🤖 AI Control: {current_population} organisms - {', '.join(action_names)}")
+            else:
+                print(f"🤖 AI Control: {current_population} organisms - No changes")
+
     def render(self):
         """Render the simulation."""
         self.screen.fill(BACKGROUND_COLOR)
@@ -2752,69 +3338,37 @@ class Simulation:
         # Draw alert if active
         if self.current_alert is not None:
             message, color, time_remaining, alert_x, alert_y = self.current_alert
-            # Convert alert location to screen coordinates
-            alert_sx, alert_sy = self.camera.world_to_screen(alert_x, alert_y, screen_width, screen_height)
-            
+
+            # Calculate fade based on remaining time (for smooth fade out)
+            # Start at 150 alpha (60% opacity) and fade to 0
+            fade_alpha = min(150, int(time_remaining * 150))  # Fade from 150 to 0
+
             # Render alert text with emoji support
             alert_text = self._render_text_with_emoji(message, color)
             text_rect = alert_text.get_rect()
+
+            # Position alert in top-left corner (less intrusive)
+            alert_x_pos = 20
+            alert_y_pos = 20
+
+            # Create semi-transparent surface with subtle background
+            padding = 3
+            bg_surface = pygame.Surface((text_rect.width + padding * 2, text_rect.height + padding * 2), pygame.SRCALPHA)
+            # Semi-transparent dark background (30% opacity of fade_alpha)
+            bg_alpha = int(fade_alpha * 0.3)
+            bg_surface.fill((0, 0, 0, bg_alpha))
             
-            # Position alert at top center of screen
-            alert_x_pos = screen_width // 2 - text_rect.width // 2
-            alert_y_pos = 50
+            # Create text surface with transparency
+            text_surface = pygame.Surface((text_rect.width, text_rect.height), pygame.SRCALPHA)
+            text_surface.fill((0, 0, 0, 0))  # Transparent background
+            text_surface.blit(alert_text, (0, 0))
+            text_surface.set_alpha(fade_alpha)
             
-            # Draw semi-transparent background
-            bg_rect = pygame.Rect(alert_x_pos - 10, alert_y_pos - 5, text_rect.width + 20, text_rect.height + 10)
-            bg_surface = pygame.Surface((bg_rect.width, bg_rect.height))
-            bg_surface.set_alpha(200)
-            bg_surface.fill((0, 0, 0))
-            self.screen.blit(bg_surface, bg_rect)
-            
-            # Draw alert text
-            self.screen.blit(alert_text, (alert_x_pos, alert_y_pos))
-            
-            # Draw indicator pointing to event location
-            center_x = alert_x_pos + text_rect.width // 2
-            center_y = alert_y_pos + text_rect.height
-            
-            if 0 <= alert_sx < screen_width and 0 <= alert_sy < screen_height:
-                # Event is on screen - draw line and circle
-                pygame.draw.line(self.screen, color, (center_x, center_y), (alert_sx, alert_sy), 2)
-                # Draw a circle at event location
-                pygame.draw.circle(self.screen, color, (alert_sx, alert_sy), 10, 2)
-            else:
-                # Event is off screen - draw arrow pointing in the direction
-                # Calculate direction from screen center to event
-                screen_center_x = screen_width // 2
-                screen_center_y = screen_height // 2
-                dx = alert_sx - screen_center_x
-                dy = alert_sy - screen_center_y
-                distance = math.sqrt(dx * dx + dy * dy)
-                
-                if distance > 0:
-                    # Normalize and scale to edge of screen
-                    edge_distance = min(screen_width, screen_height) * 0.4
-                    dir_x = dx / distance
-                    dir_y = dy / distance
-                    edge_x = screen_center_x + dir_x * edge_distance
-                    edge_y = screen_center_y + dir_y * edge_distance
-                    
-                    # Draw line from alert to edge
-                    pygame.draw.line(self.screen, color, (center_x, center_y), (int(edge_x), int(edge_y)), 2)
-                    
-                    # Draw arrowhead at edge
-                    arrow_size = 15
-                    perp_x = -dir_y
-                    perp_y = dir_x
-                    arrow1_x = int(edge_x - dir_x * arrow_size + perp_x * arrow_size * 0.5)
-                    arrow1_y = int(edge_y - dir_y * arrow_size + perp_y * arrow_size * 0.5)
-                    arrow2_x = int(edge_x - dir_x * arrow_size - perp_x * arrow_size * 0.5)
-                    arrow2_y = int(edge_y - dir_y * arrow_size - perp_y * arrow_size * 0.5)
-                    pygame.draw.polygon(self.screen, color, [
-                        (int(edge_x), int(edge_y)),
-                        (arrow1_x, arrow1_y),
-                        (arrow2_x, arrow2_y)
-                    ])
+            # Blit text onto background
+            bg_surface.blit(text_surface, (padding, padding))
+
+            # Draw the faded alert with background
+            self.screen.blit(bg_surface, (alert_x_pos, alert_y_pos))
         
         # Draw UI
         info_text = [
@@ -2835,8 +3389,29 @@ class Simulation:
             self.screen.blit(surface, (10, y_offset))
             y_offset += 25
         
+        # Calculate position for parameter controls (same as in _draw_parameter_controls)
+        button_width = 80
+        button_spacing = 10
+        label_width = 150
+        x_start = screen_width - label_width - button_width * 2 - button_spacing * 2 - 20
+
         # Draw parameter control buttons
         self._draw_parameter_controls(screen_width, y_offset)
+
+        # Show population control status with AI indicator
+        current_pop = len(self.organisms)
+        if current_pop < self.target_population_min:
+            status_color = (255, 100, 100)  # Red for low
+            status_text = f"🧠📉 Population: {current_pop} (Low)"
+        elif current_pop > self.target_population_max:
+            status_color = (255, 150, 100)  # Orange for high
+            status_text = f"🧠📈 Population: {current_pop} (High)"
+        else:
+            status_color = (100, 255, 100)  # Green for stable
+            status_text = f"🧠⚖️ Population: {current_pop} (Stable)"
+
+        status_surface = self.font.render(status_text, True, status_color)
+        self.screen.blit(status_surface, (x_start, y_offset - 25))
         
         if self.paused:
             pause_text = self.font.render("PAUSED", True, (255, 0, 0))
@@ -2854,7 +3429,8 @@ class Simulation:
         print("  SPACE - Pause/Unpause")
         print("  F - Add Food")
         print("  O - Add Organisms")
-        print("  R - Reset Simulation")
+        print("  R - Reset Simulation (includes AI)")
+        print("  S - Save AI Weights Manually")
         print("  M - Toggle Terminal Output")
         print("  ESC - Exit")
         print("  Mouse Wheel - Zoom")
@@ -2872,6 +3448,12 @@ class Simulation:
         print("\n" + "="*80)
         print("Simulation Ended")
         print("="*80)
+
+        # Save AI weights on exit
+        print("💾 Saving AI controller weights...")
+        sim.ai_controller.save_weights()
+        print("✅ AI weights saved successfully")
+
         pygame.quit()
 
 if __name__ == "__main__":
