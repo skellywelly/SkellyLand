@@ -2372,6 +2372,12 @@ class Simulation:
         if not self.alerts_enabled:
             return  # Don't create alerts if disabled
         self.current_alert = (message, color, self.alert_duration, x, y)
+
+    def _update_territory_markers(self, dt: float):
+        """Update territory markers - they decay slower than regular signals."""
+        # Territory markers are stored as special signals with slower decay
+        # They influence organism behavior in marked areas
+        pass  # Implementation would track persistent territory markers in simulation state
     
     def _draw_parameter_controls(self, screen_width: int, start_y: int):
         """Draw clickable parameter control buttons."""
