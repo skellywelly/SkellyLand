@@ -24,7 +24,7 @@ BACKGROUND_COLOR = (20, 30, 50)
 FOOD_COLOR = (100, 200, 100)
 
 # Neural Network Constants
-INPUT_SIZE = 19  # Number of input neurons (sensors) - increased for toxicity, mate quality, and overcrowding
+INPUT_SIZE = 34  # Number of input neurons (sensors) - comprehensive environmental awareness
 # OUTPUT_SIZE is now variable: flagella_count + 3 (turn_left, turn_right, reproduction)
 
 class NeuralNetwork:
@@ -611,7 +611,10 @@ class Organism:
     def _get_sensory_inputs(self, organisms: List['Organism'], foods: List[Food]) -> np.ndarray:
         """Get sensory inputs for neural network."""
         inputs = np.zeros(INPUT_SIZE)
-        
+
+        # Use effective vision range for sensing
+        vision_range = getattr(self, 'effective_vision_range', self.dna.vision_range)
+
         # Find nearest food
         nearest_food_dist = 1.0
         nearest_food_angle = 0.0
