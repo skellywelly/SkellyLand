@@ -1830,7 +1830,7 @@ class Simulation:
         font_dir = os.path.join(os.path.dirname(__file__), "fonts")
         dejavu_path = os.path.join(font_dir, "DejaVuSans.ttf")
         emoji_path = os.path.join(font_dir, "NotoColorEmoji.ttf")
-        alert_font_size = 36
+        alert_font_size = 20  # Reduced from 36 to make alerts smaller
         
         # Load text font
         try:
@@ -1841,8 +1841,8 @@ class Simulation:
         except:
             self.alert_font = pygame.font.Font(None, alert_font_size)
         
-        # Load emoji font for emoji rendering (smaller size to match text)
-        emoji_font_size = 24  # Same size as normal text font
+        # Load emoji font for emoji rendering (same size as alert text)
+        emoji_font_size = alert_font_size  # Match alert font size
         try:
             if os.path.exists(emoji_path):
                 self.emoji_font = pygame.font.Font(emoji_path, emoji_font_size)
