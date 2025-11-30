@@ -726,6 +726,146 @@ class Organism:
         # The neural network can learn to avoid food when energy is high (close to 1.0)
         # The neural network can learn to seek mates with high energy, speed, and complexity
         # The neural network can learn to fight more when overcrowded (inputs[17] and inputs[18])
+        # Social interaction history (recent fights and matings)
+        # Positive for recent mating, negative for recent fighting
+        inputs[19] = self.last_mated * 0.5 - (1 if hasattr(self, "combat_target") and self.combat_target else 0) * 0.3
+        
+        # Environmental awareness - density gradients
+        # Calculate food density in different directions
+        food_front = 0
+        food_back = 0
+        org_front = 0
+        org_back = 0
+        
+        # Sample points in front and back of the organism
+        sample_distance = vision_range * 0.5
+        front_x = self.x + math.cos(self.angle) * sample_distance
+        front_y = self.y + math.sin(self.angle) * sample_distance
+        back_x = self.x - math.cos(self.angle) * sample_distance
+        back_y = self.y - math.sin(self.angle) * sample_distance
+        
+        # Count food in front and back regions
+        for food in foods:
+            dx_front = food.x - front_x
+            dy_front = food.y - front_y
+            dist_front = math.sqrt(dx_front * dx_front + dy_front * dy_front)
+            
+            dx_back = food.x - back_x
+            dy_back = food.y - back_y
+            dist_back = math.sqrt(dx_back * dx_back + dy_back * dy_back)
+            
+            if dist_front < sample_distance:
+                food_front += 1
+            if dist_back < sample_distance:
+                food_back += 1
+        
+        # Count organisms in front and back regions
+        for org in organisms:
+            if org is self:
+                continue
+            
+            dx_front = org.x - front_x
+            dy_front = org.y - front_y
+            dist_front = math.sqrt(dx_front * dx_front + dy_front * dy_front)
+            
+            dx_back = org.x - back_x
+            dy_back = org.y - back_y
+            dist_back = math.sqrt(dx_back * dx_back + dy_back * dy_back)
+            
+            if dist_front < sample_distance:
+                org_front += 1
+            if dist_back < sample_distance:
+                org_back += 1
+        
+        # Normalize gradients (difference between front and back, scaled to 0-1)
+        food_gradient = min(1.0, (food_front - food_back + 10) / 20.0)  # +10 to shift from -10..10 to 0..20, then /20
+        org_gradient = min(1.0, (org_front - org_back + 10) / 20.0)    # Same normalization
+        
+        inputs[20] = food_gradient  # Food density gradient (0 = more food behind, 1 = more food in front)
+        inputs[21] = org_gradient   # Organism density gradient (0 = more orgs behind, 1 = more orgs in front)
+        
+        # Additional environmental awareness
+        # Total food and organism counts in vision range
+        total_food_in_range = sum(1 for food in foods if math.sqrt((food.x - self.x)**2 + (food.y - self.y)**2) < vision_range)
+        total_org_in_range = sum(1 for org in organisms if org is not self and math.sqrt((org.x - self.x)**2 + (org.y - self.y)**2) < vision_range)
+        
+        inputs[22] = min(total_food_in_range / 50.0, 1.0)  # Total food density (normalized)
+        inputs[23] = min(total_org_in_range / 20.0, 1.0)  # Total organism density (normalized)
+        
+        # Advanced environmental awareness - quality and movement patterns
+        # Food quality distribution (toxic vs safe food)
+        safe_food_front = sum(1 for food in foods
+                            if math.sqrt((food.x - front_x)**2 + (food.y - front_y)**2) < sample_distance
+                            and food.toxicity == 0.0)
+        safe_food_back = sum(1 for food in foods
+                           if math.sqrt((food.x - back_x)**2 + (food.y - back_y)**2) < sample_distance
+                           and food.toxicity == 0.0)
+        toxic_food_front = sum(1 for food in foods
+                             if math.sqrt((food.x - front_x)**2 + (food.y - front_y)**2) < sample_distance
+                             and food.toxicity > 0.0)
+        toxic_food_back = sum(1 for food in foods
+                            if math.sqrt((food.x - back_x)**2 + (food.y - back_y)**2) < sample_distance
+                            and food.toxicity > 0.0)
+        
+        # Normalize food quality gradients
+        total_safe_front = safe_food_front + 1  # +1 to avoid division by zero
+        total_safe_back = safe_food_back + 1
+        safe_food_gradient = min(1.0, safe_food_front / total_safe_front - safe_food_back / total_safe_back + 1.0) / 2.0
+        
+        total_toxic_front = toxic_food_front + 1
+        total_toxic_back = toxic_food_back + 1
+        toxic_food_gradient = min(1.0, toxic_food_front / total_toxic_front - toxic_food_back / total_toxic_back + 1.0) / 2.0
+        
+        # Movement flow patterns (average velocity directions of nearby organisms)
+        front_velocities = []
+        back_velocities = []
+        
+        for org in organisms:
+            if org is self:
+                continue
+            
+            # Check if in front region
+            if math.sqrt((org.x - front_x)**2 + (org.y - front_y)**2) < sample_distance:
+                front_velocities.append((org.vx, org.vy))
+            
+            # Check if in back region
+            if math.sqrt((org.x - back_x)**2 + (org.y - back_y)**2) < sample_distance:
+                back_velocities.append((org.vx, org.vy))
+        
+        # Calculate average movement directions
+        front_avg_angle = 0.0
+        back_avg_angle = 0.0
+        
+        if front_velocities:
+            avg_vx = sum(v[0] for v in front_velocities) / len(front_velocities)
+            avg_vy = sum(v[1] for v in front_velocities) / len(front_velocities)
+            front_avg_angle = math.atan2(avg_vy, avg_vx) / math.pi  # Normalized to [-1, 1]
+        
+        if back_velocities:
+            avg_vx = sum(v[0] for v in back_velocities) / len(back_velocities)
+            avg_vy = sum(v[1] for v in back_velocities) / len(back_velocities)
+            back_avg_angle = math.atan2(avg_vy, avg_vx) / math.pi  # Normalized to [-1, 1]
+        
+        # Movement flow gradient (difference in movement directions)
+        movement_flow_gradient = (front_avg_angle - back_avg_angle + 2.0) / 4.0  # Normalized to [0, 1]
+        
+        inputs[24] = safe_food_gradient  # Safe food concentration gradient
+        inputs[25] = toxic_food_gradient  # Toxic food concentration gradient
+        inputs[26] = front_avg_angle * 0.5 + 0.5  # Front region movement direction (normalized to [0, 1])
+        inputs[27] = movement_flow_gradient  # Movement flow gradient between regions
+        inputs[28] = 0.0  # Reserved for future use
+        
+        # Note: Energy level (inputs[6]) already provides information about fullness
+        # The neural network can learn to avoid food when energy is high (close to 1.0)
+        # The neural network can learn to seek mates with high energy, speed, and complexity
+        # The neural network can learn to fight more when overcrowded (inputs[17] and inputs[18])
+        # The neural network can learn pain avoidance and social behavior patterns (inputs[19])
+        # The neural network can learn to move toward resource concentrations (inputs[20] and inputs[21])
+        # The neural network can learn to respond to overall environmental density (inputs[22] and inputs[23])
+        # The neural network can learn food quality preferences (inputs[24] and inputs[25])
+        # The neural network can learn movement flow patterns (inputs[26] and inputs[27])
+        
+
         
         return inputs
     
