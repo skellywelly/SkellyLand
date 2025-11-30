@@ -24,7 +24,7 @@ BACKGROUND_COLOR = (20, 30, 50)
 FOOD_COLOR = (100, 200, 100)
 
 # Neural Network Constants
-INPUT_SIZE = 29  # Number of input neurons (sensors) - expanded environmental awareness
+INPUT_SIZE = 19  # Number of input neurons (sensors) - increased for toxicity, mate quality, and overcrowding
 # OUTPUT_SIZE is now variable: flagella_count + 3 (turn_left, turn_right, reproduction)
 
 class NeuralNetwork:
