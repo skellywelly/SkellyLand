@@ -2334,6 +2334,39 @@ class Simulation:
                 self.stats[key] = 0
             self.monitor_timer = 0.0
     
+    def _update_communication_signals(self, dt: float):
+        """Update signal propagation between organisms."""
+        current_time = getattr(self, '_simulation_time', 0)
+
+        # Collect all signals from all organisms
+        all_signals = []
+        for org in self.organisms:
+            for signal_type, strength, x, y, time_emitted in org.signals_emitted:
+                age = current_time - time_emitted
+                # Signals decay with distance and time
+                decayed_strength = strength * max(0, 1 - age * 0.05)  # Time decay
+                if decayed_strength > 0.1:
+                    all_signals.append((signal_type, decayed_strength, x, y, age))
+
+        # Let each organism detect nearby signals
+        for org in self.organisms:
+            org.signals_detected = {}
+            comm_range = getattr(org.dna, 'communication_range', 100)
+
+            for signal_type, strength, x, y, age in all_signals:
+                dx = org.x - x
+                dy = org.y - y
+                distance = math.sqrt(dx * dx + dy * dy)
+
+                if distance < comm_range and distance > 0:  # Don't detect own signals
+                    # Distance-based attenuation
+                    distance_factor = max(0.1, 1 - distance / comm_range)
+                    detected_strength = strength * distance_factor
+
+                    if signal_type not in org.signals_detected:
+                        org.signals_detected[signal_type] = []
+                    org.signals_detected[signal_type].append((detected_strength, distance, age))
+
     def _create_alert(self, message: str, color: Tuple[int, int, int], x: float, y: float):
         """Create an alert for a major event (points at location but doesn't move camera)."""
         if not self.alerts_enabled:
