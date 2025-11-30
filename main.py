@@ -499,6 +499,10 @@ class Organism:
         self.energy = random.uniform(50, 80)  # Start with more energy
         self.max_energy = 150  # Higher max energy
         self.age = 0
+
+        # Pain and damage tracking (for neural network)
+        self.pain_level = 0.0  # Current pain (0-1, decays over time)
+        self.pain_decay_rate = 0.02  # How fast pain decays per second
         
         # Behavior
         self.target = None  # Target food or organism
@@ -509,9 +513,9 @@ class Organism:
         self._death_cause = None  # Track cause of death for statistics
         
         # Neural network (DNA-controlled architecture)
-        # Output size: turn_left, turn_right, flagella_count outputs, mate, fight, run, chase, feed, avoid_toxic, reproduction, overcrowding_threshold_mod, overcrowding_distance_mod
-        # Total: 2 + flagella_count + 9 = flagella_count + 11
-        output_size = self.dna.flagella_count + 11
+        # Output size: turn_left, turn_right, flagella_count outputs, mate, fight, run, chase, feed, avoid_toxic, reproduction, overcrowding_threshold_mod, overcrowding_distance_mod, metabolic_rate_control, learning_rate_control
+        # Total: 2 + flagella_count + 11 = flagella_count + 13
+        output_size = self.dna.flagella_count + 13
         self.brain = NeuralNetwork(
             hidden_layers=self.dna.nn_hidden_layers,
             neurons_per_layer=self.dna.nn_neurons_per_layer,
@@ -541,10 +545,14 @@ class Organism:
         self.learning_timer += dt
         self.backprop_timer += dt
         
-        # Consume energy (metabolism) - apply global multiplier
+        # Consume energy (metabolism) - apply global multiplier and neural network control
         old_energy = self.energy
         metabolism_mult = getattr(self, '_temp_metabolism_mult', 1.0)
-        self.energy -= self.dna.metabolism * metabolism_mult * dt
+        neural_metabolism_mult = getattr(self, 'metabolic_rate_multiplier', 1.0)
+        self.energy -= self.dna.metabolism * metabolism_mult * neural_metabolism_mult * dt
+
+        # Update pain level (decays over time)
+        self.pain_level = max(0.0, self.pain_level - self.pain_decay_rate * dt)
         
         # Track energy history
         self.energy_history.append(self.energy)
