@@ -178,9 +178,9 @@ class DNA:
             self.flagella_wave_amplitude = random.uniform(0.3, 0.8)  # Wave amplitude (0-1)
             self.flagella_wave_length = random.uniform(0.5, 2.0)  # Wave length factor
             # Propulsion (now based on flagella)
-            self.propulsion_strength = random.uniform(0.5, 3.0)  # Overall propulsion strength
+            self.propulsion_strength = random.uniform(0.8, 4.0)  # Overall propulsion strength (increased from 0.5-3.0)
             self.propulsion_efficiency = random.uniform(0.3, 0.9)
-            self.max_speed = random.uniform(1.0, 5.0)
+            self.max_speed = random.uniform(1.5, 6.0)  # Increased from 1.0-5.0
             self.energy_efficiency = random.uniform(0.5, 1.5)
             self.metabolism = random.uniform(0.002, 0.008)  # Much lower metabolism - live longer
             self.vision_range = random.uniform(50, 200)
@@ -352,13 +352,13 @@ class DNA:
             self.flagella_wave_length = np.clip(self.flagella_wave_length + random.uniform(-0.3, 0.3), 0.3, 3.0)
         
         if random.random() < mutation_rate:
-            self.propulsion_strength = np.clip(self.propulsion_strength + random.uniform(-0.3, 0.3), 0.2, 4.0)
+            self.propulsion_strength = np.clip(self.propulsion_strength + random.uniform(-0.3, 0.3), 0.5, 5.0)  # Increased max from 4.0 to 5.0
         
         if random.random() < mutation_rate:
             self.propulsion_efficiency = np.clip(self.propulsion_efficiency + random.uniform(-0.1, 0.1), 0.2, 1.0)
         
         if random.random() < mutation_rate:
-            self.max_speed = np.clip(self.max_speed + random.uniform(-0.5, 0.5), 0.5, 6.0)
+            self.max_speed = np.clip(self.max_speed + random.uniform(-0.5, 0.5), 0.5, 7.0)  # Increased max from 6.0 to 7.0
         
         if random.random() < mutation_rate:
             self.energy_efficiency = np.clip(self.energy_efficiency + random.uniform(-0.2, 0.2), 0.3, 2.0)
@@ -541,9 +541,10 @@ class Organism:
         self.learning_timer += dt
         self.backprop_timer += dt
         
-        # Consume energy (metabolism)
+        # Consume energy (metabolism) - apply global multiplier
         old_energy = self.energy
-        self.energy -= self.dna.metabolism * dt
+        metabolism_mult = getattr(self, '_temp_metabolism_mult', 1.0)
+        self.energy -= self.dna.metabolism * metabolism_mult * dt
         
         # Track energy history
         self.energy_history.append(self.energy)
@@ -679,7 +680,8 @@ class Organism:
         inputs[7] = math.sqrt(self.vx * self.vx + self.vy * self.vy) / self.dna.max_speed  # Normalized speed
         inputs[8] = (self.angle % (2 * math.pi)) / (2 * math.pi)  # Normalized angle
         inputs[9] = self.dna.food_preference
-        inputs[10] = self.dna.aggression
+        aggression_mult = getattr(self, '_temp_aggression_mult', 1.0)
+        inputs[10] = self.dna.aggression * aggression_mult  # Apply global aggression multiplier
         inputs[11] = min(self.age / 100.0, 1.0)  # Normalized age
         inputs[12] = nearest_food_toxicity  # Toxicity level of nearest food (0-1)
         inputs[13] = nearest_food_beneficial  # -1 = harmful, 0 = neutral, 1 = beneficial
@@ -986,11 +988,12 @@ class Organism:
         # Higher reproduction_desire and energy = more likely to mate
         mate_output = outputs[base_idx + 0]
         # Increased bias - organisms are much more likely to want to mate
-        mate_bias = (self.dna.reproduction_desire * 0.6 + (energy_ratio - 0.3) * 0.4)  # Stronger bias toward mating
+        reproduction_desire_mult = getattr(self, '_temp_reproduction_desire_mult', 1.0)
+        mate_bias = (self.dna.reproduction_desire * reproduction_desire_mult * 0.7 + (energy_ratio - 0.2) * 0.5)  # Apply global reproduction_desire multiplier
         # Lower threshold - easier to trigger mate decision
-        self.neural_mate = (mate_output + mate_bias) > -0.3  # Lower threshold (was 0.0)
+        self.neural_mate = (mate_output + mate_bias) > -0.5  # Even lower threshold to make mating more common
         
-        self.neural_fight = outputs[base_idx + 1] > 0.0  # Fight decision
+        self.neural_fight = outputs[base_idx + 1] > 0.4  # Fight decision - higher threshold to make fights rarer
         self.neural_run = outputs[base_idx + 2] > 0.0  # Run away decision
         self.neural_chase = outputs[base_idx + 3] > 0.0  # Chase decision
         self.neural_feed = outputs[base_idx + 4] > 0.0  # Feed decision
@@ -1097,12 +1100,13 @@ class Organism:
         
         # Simplified propulsion - ensure organisms always move
         # Base speed from flagella properties - much faster
-        base_speed = 100.0  # Base pixels per second (increased from 30)
-        speed_multiplier = avg_flagella_activity * (1.0 + self.dna.flagella_length / 40.0) * (1.0 + self.dna.flagella_count / 4.0)
-        target_speed = base_speed * speed_multiplier
+        flagella_mult = getattr(self, '_temp_flagella_mult', 1.0)
+        base_speed = 130.0  # Base pixels per second (increased from 100.0)
+        speed_multiplier = avg_flagella_activity * (1.2 + self.dna.flagella_length / 35.0) * (1.2 + self.dna.flagella_count / 3.5)  # Increased multipliers
+        target_speed = base_speed * speed_multiplier * self.dna.propulsion_strength * 0.4 * flagella_mult  # Add propulsion_strength and global multiplier
         
         # Don't let max_speed limit too much - scale it up
-        effective_max_speed = self.dna.max_speed * 20.0  # Scale up max_speed
+        effective_max_speed = self.dna.max_speed * 25.0  # Scale up max_speed (increased from 20.0)
         target_speed = min(target_speed, effective_max_speed)
         
         # Calculate desired velocity
@@ -1110,7 +1114,7 @@ class Organism:
         desired_vy = math.sin(self.angle) * target_speed
         
         # Smoothly approach desired velocity (like acceleration)
-        acceleration = 200.0  # pixels per second squared (increased)
+        acceleration = 250.0  # pixels per second squared (increased from 200.0)
         vx_diff = desired_vx - self.vx
         vy_diff = desired_vy - self.vy
         self.vx += vx_diff * acceleration * dt
@@ -1412,14 +1416,15 @@ class Organism:
                     self_fight_probability = 1.0 if (hasattr(self, 'neural_fight') and self.neural_fight) else 0.0
                     org_fight_probability = 1.0 if (hasattr(org, 'neural_fight') and org.neural_fight) else 0.0
                     
-                    # Increase fight probability if overcrowded
+                    # Increase fight probability if overcrowded (reduced boost to make fights less common)
                     if hasattr(self, 'is_overcrowded') and self.is_overcrowded:
-                        self_fight_probability = min(1.0, self_fight_probability + 0.6)  # Strong boost
+                        self_fight_probability = min(1.0, self_fight_probability + 0.3)  # Reduced boost
                     if hasattr(org, 'is_overcrowded') and org.is_overcrowded:
-                        org_fight_probability = min(1.0, org_fight_probability + 0.6)  # Strong boost
+                        org_fight_probability = min(1.0, org_fight_probability + 0.3)  # Reduced boost
                     
                     # Check if both organisms want to fight (mutual aggression, including overcrowding boost)
-                    both_want_fight = (self_fight_probability > 0.5 and org_fight_probability > 0.5)
+                    # Higher threshold to make fights rarer - both must strongly want to fight
+                    both_want_fight = (self_fight_probability > 0.7 and org_fight_probability > 0.7)
                     
                     if both_want_fight:
                         # Both want to fight - engage in combat
@@ -1436,7 +1441,7 @@ class Organism:
                         # Only require basic conditions: enough energy, age, and cooldown period
                         # Ensure parents have enough energy to survive mating (need at least 40 energy to mate safely)
                         # This accounts for energy cost (up to 18 for 3 offspring) + safety margin
-                        min_energy_for_mating = 40.0  # Minimum energy needed to survive mating
+                        min_energy_for_mating = 25.0  # Lowered minimum energy needed to survive mating (was 40.0)
                         # Use DNA-defined minimum mating age for each organism
                         if (self.energy > min_energy_for_mating and
                             org.energy > min_energy_for_mating and
@@ -1741,7 +1746,7 @@ class Camera:
     def __init__(self):
         self.x = WORLD_WIDTH / 2
         self.y = WORLD_HEIGHT / 2
-        self.zoom = 0.5  # Start zoomed out
+        self.zoom = 0.3  # Start zoomed out more
     
     def world_to_screen(self, wx: float, wy: float, screen_width: int, screen_height: int) -> Tuple[int, int]:
         """Convert world coordinates to screen coordinates."""
@@ -1810,7 +1815,7 @@ class Simulation:
         self.camera = Camera()
         
         # Create initial organisms
-        for _ in range(20):
+        for _ in range(40):
             x = random.uniform(0, WORLD_WIDTH)
             y = random.uniform(0, WORLD_HEIGHT)
             self.organisms.append(Organism(x, y))
@@ -1820,11 +1825,36 @@ class Simulation:
         
         # UI
         self.font = pygame.font.Font(None, 24)
-        self.alert_font = pygame.font.Font(None, 36)
+        # Use bundled fonts for platform independence
+        import os
+        font_dir = os.path.join(os.path.dirname(__file__), "fonts")
+        dejavu_path = os.path.join(font_dir, "DejaVuSans.ttf")
+        emoji_path = os.path.join(font_dir, "NotoColorEmoji.ttf")
+        alert_font_size = 36
+        
+        # Load text font
+        try:
+            if os.path.exists(dejavu_path):
+                self.alert_font = pygame.font.Font(dejavu_path, alert_font_size)
+            else:
+                self.alert_font = pygame.font.SysFont("sans", alert_font_size)
+        except:
+            self.alert_font = pygame.font.Font(None, alert_font_size)
+        
+        # Load emoji font for emoji rendering (smaller size to match text)
+        emoji_font_size = 24  # Same size as normal text font
+        try:
+            if os.path.exists(emoji_path):
+                self.emoji_font = pygame.font.Font(emoji_path, emoji_font_size)
+            else:
+                self.emoji_font = None
+        except:
+            self.emoji_font = None
         
         # Alert system for major events
         self.current_alert = None  # (message, color, time_remaining, location_x, location_y)
         self.alert_duration = 3.0  # Show alert for 3 seconds
+        self.alerts_enabled = True  # Toggle for event alerts
         self.camera_following_event = False  # Whether camera is following an event
         self.event_target_x = None
         self.event_target_y = None
@@ -1833,7 +1863,7 @@ class Simulation:
         # Mouse dragging
         self.dragging = False
         self.last_mouse_pos = (0, 0)
-        self.camera_follow_enabled = True
+        self.camera_follow_enabled = False  # Auto-follow disabled by default
         
         # Monitoring - comprehensive statistics tracking
         self.monitor_timer = 0.0
@@ -1841,6 +1871,12 @@ class Simulation:
         self.frame_count = 0
         self.total_time = 0.0
         self.show_terminal_output = False  # Toggle for terminal monitoring output (off by default)
+        
+        # Global parameter multipliers (adjustable via UI)
+        self.metabolism_multiplier = 1.0
+        self.flagella_impulse_multiplier = 1.0
+        self.aggression_multiplier = 1.0
+        self.reproduction_desire_multiplier = 1.0
         
         # Statistics counters (reset each interval)
         self.stats = {
@@ -1898,10 +1934,10 @@ class Simulation:
         # Reset camera
         self.camera.x = WORLD_WIDTH / 2
         self.camera.y = WORLD_HEIGHT / 2
-        self.camera.zoom = 0.5  # Start zoomed out
+        self.camera.zoom = 0.3  # Start zoomed out more
         
         # Create initial organisms
-        for _ in range(20):
+        for _ in range(40):
             x = random.uniform(0, WORLD_WIDTH)
             y = random.uniform(0, WORLD_HEIGHT)
             self.organisms.append(Organism(x, y))
@@ -1927,10 +1963,44 @@ class Simulation:
                     # Toggle terminal monitoring output
                     self.show_terminal_output = not self.show_terminal_output
                     print(f"Terminal output: {'ON' if self.show_terminal_output else 'OFF'}")
+                elif event.key == pygame.K_a:
+                    # Toggle event alerts
+                    self.alerts_enabled = not self.alerts_enabled
+                    if not self.alerts_enabled:
+                        self.current_alert = None  # Clear current alert when disabling
+                    print(f"Event alerts: {'ON' if self.alerts_enabled else 'OFF'}")
                 elif event.key == pygame.K_ESCAPE:
                     self.running = False
+                elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
+                    # Zoom in with + or =
+                    self.camera.zoom = min(3.0, self.camera.zoom + 0.1)
+                    self.camera_follow_enabled = False  # Disable auto-follow when manually controlling
+                elif event.key == pygame.K_MINUS:
+                    # Zoom out with -
+                    self.camera.zoom = max(0.1, self.camera.zoom - 0.1)
+                    self.camera_follow_enabled = False  # Disable auto-follow when manually controlling
+                elif event.key == pygame.K_UP:
+                    # Pan up with arrow key
+                    self.camera.move(0, -100 / self.camera.zoom)  # Move 100 world units up
+                    self.camera_follow_enabled = False  # Disable auto-follow when manually controlling
+                elif event.key == pygame.K_DOWN:
+                    # Pan down with arrow key
+                    self.camera.move(0, 100 / self.camera.zoom)  # Move 100 world units down
+                    self.camera_follow_enabled = False  # Disable auto-follow when manually controlling
+                elif event.key == pygame.K_LEFT:
+                    # Pan left with arrow key
+                    self.camera.move(-100 / self.camera.zoom, 0)  # Move 100 world units left
+                    self.camera_follow_enabled = False  # Disable auto-follow when manually controlling
+                elif event.key == pygame.K_RIGHT:
+                    # Pan right with arrow key
+                    self.camera.move(100 / self.camera.zoom, 0)  # Move 100 world units right
+                    self.camera_follow_enabled = False  # Disable auto-follow when manually controlling
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # Left mouse button
+                    # Check if clicking on parameter control buttons
+                    if self._handle_parameter_button_click(event.pos):
+                        continue  # Button was clicked, don't start dragging
+                    
                     self.dragging = True
                     self.last_mouse_pos = event.pos
                     self.camera_follow_enabled = False  # Disable auto-follow when dragging
@@ -1983,8 +2053,18 @@ class Simulation:
         new_organisms_this_frame = []
         
         for org in self.organisms[:]:
+            # Pass multipliers to organism for use during update
+            org._temp_metabolism_mult = self.metabolism_multiplier
+            org._temp_flagella_mult = self.flagella_impulse_multiplier
+            org._temp_aggression_mult = self.aggression_multiplier
+            org._temp_reproduction_desire_mult = self.reproduction_desire_multiplier
+            
             if not org.update(self.organisms, self.foods, dt):
                 # Death event - create alert
+                # Check if organism is still in list (might have been eaten/removed during update)
+                if org not in self.organisms:
+                    continue
+                
                 death_cause = 'starvation'
                 if hasattr(org, '_death_cause'):
                     death_cause = org._death_cause
@@ -2108,7 +2188,171 @@ class Simulation:
     
     def _create_alert(self, message: str, color: Tuple[int, int, int], x: float, y: float):
         """Create an alert for a major event (points at location but doesn't move camera)."""
+        if not self.alerts_enabled:
+            return  # Don't create alerts if disabled
         self.current_alert = (message, color, self.alert_duration, x, y)
+    
+    def _draw_parameter_controls(self, screen_width: int, start_y: int):
+        """Draw clickable parameter control buttons."""
+        button_width = 80
+        button_height = 25
+        button_spacing = 10
+        label_width = 150
+        x_start = screen_width - label_width - button_width * 2 - button_spacing * 2 - 20
+        
+        y = start_y + 10
+        controls = [
+            ("Metabolism", self.metabolism_multiplier, 0.1, 3.0),
+            ("Flagella", self.flagella_impulse_multiplier, 0.1, 3.0),
+            ("Aggression", self.aggression_multiplier, 0.1, 3.0),
+            ("Repro Desire", self.reproduction_desire_multiplier, 0.1, 3.0),
+        ]
+        
+        for label, value, min_val, max_val in controls:
+            # Draw label
+            label_surface = self.font.render(f"{label}: {value:.2f}", True, (255, 255, 255))
+            self.screen.blit(label_surface, (x_start, y))
+            
+            # Draw - button
+            minus_rect = pygame.Rect(x_start + label_width, y, button_width, button_height)
+            pygame.draw.rect(self.screen, (100, 100, 100), minus_rect)
+            pygame.draw.rect(self.screen, (255, 255, 255), minus_rect, 2)
+            minus_text = self.font.render("-", True, (255, 255, 255))
+            text_x = minus_rect.centerx - minus_text.get_width() // 2
+            text_y = minus_rect.centery - minus_text.get_height() // 2
+            self.screen.blit(minus_text, (text_x, text_y))
+            
+            # Draw + button
+            plus_rect = pygame.Rect(x_start + label_width + button_width + button_spacing, y, button_width, button_height)
+            pygame.draw.rect(self.screen, (100, 100, 100), plus_rect)
+            pygame.draw.rect(self.screen, (255, 255, 255), plus_rect, 2)
+            plus_text = self.font.render("+", True, (255, 255, 255))
+            text_x = plus_rect.centerx - plus_text.get_width() // 2
+            text_y = plus_rect.centery - plus_text.get_height() // 2
+            self.screen.blit(plus_text, (text_x, text_y))
+            
+            y += button_height + 5
+    
+    def _handle_parameter_button_click(self, pos: Tuple[int, int]) -> bool:
+        """Handle clicks on parameter control buttons. Returns True if a button was clicked."""
+        button_width = 80
+        button_height = 25
+        button_spacing = 10
+        label_width = 150
+        screen_width = self.screen.get_width()
+        x_start = screen_width - label_width - button_width * 2 - button_spacing * 2 - 20
+        
+        # Calculate start_y (same as in _draw_parameter_controls)
+        info_lines = 9  # Number of info text lines
+        start_y = 10 + info_lines * 25 + 10
+        
+        controls = [
+            ("metabolism", self.metabolism_multiplier, 0.1, 3.0),
+            ("flagella", self.flagella_impulse_multiplier, 0.1, 3.0),
+            ("aggression", self.aggression_multiplier, 0.1, 3.0),
+            ("reproduction_desire", self.reproduction_desire_multiplier, 0.1, 3.0),
+        ]
+        
+        y = start_y
+        for control_name, value, min_val, max_val in controls:
+            # Check - button
+            minus_rect = pygame.Rect(x_start + label_width, y, button_width, button_height)
+            if minus_rect.collidepoint(pos):
+                step = 0.1
+                if control_name == "metabolism":
+                    self.metabolism_multiplier = max(min_val, self.metabolism_multiplier - step)
+                elif control_name == "flagella":
+                    self.flagella_impulse_multiplier = max(min_val, self.flagella_impulse_multiplier - step)
+                elif control_name == "aggression":
+                    self.aggression_multiplier = max(min_val, self.aggression_multiplier - step)
+                elif control_name == "reproduction_desire":
+                    self.reproduction_desire_multiplier = max(min_val, self.reproduction_desire_multiplier - step)
+                return True
+            
+            # Check + button
+            plus_rect = pygame.Rect(x_start + label_width + button_width + button_spacing, y, button_width, button_height)
+            if plus_rect.collidepoint(pos):
+                step = 0.1
+                if control_name == "metabolism":
+                    self.metabolism_multiplier = min(max_val, self.metabolism_multiplier + step)
+                elif control_name == "flagella":
+                    self.flagella_impulse_multiplier = min(max_val, self.flagella_impulse_multiplier + step)
+                elif control_name == "aggression":
+                    self.aggression_multiplier = min(max_val, self.aggression_multiplier + step)
+                elif control_name == "reproduction_desire":
+                    self.reproduction_desire_multiplier = min(max_val, self.reproduction_desire_multiplier + step)
+                return True
+            
+            y += button_height + 5
+        
+        return False
+    
+    def _render_text_with_emoji(self, text: str, color: Tuple[int, int, int]) -> pygame.Surface:
+        """Render text with emoji support by combining text and emoji fonts."""
+        if self.emoji_font is None:
+            # No emoji font available, just render with text font
+            return self.alert_font.render(text, True, color)
+        
+        # Simple emoji detection: check if character is outside ASCII range
+        # This is a basic approach - emojis are typically in Unicode ranges
+        parts = []
+        current_text = ""
+        current_emoji = ""
+        
+        for char in text:
+            # Check if character is likely an emoji (outside ASCII, or in emoji ranges)
+            # Emojis are typically in ranges: U+1F300-1F9FF, U+2600-26FF, U+2700-27BF, etc.
+            code_point = ord(char)
+            is_emoji = (code_point >= 0x1F300 and code_point <= 0x1F9FF) or \
+                      (code_point >= 0x2600 and code_point <= 0x26FF) or \
+                      (code_point >= 0x2700 and code_point <= 0x27BF) or \
+                      (code_point >= 0x1F600 and code_point <= 0x1F64F) or \
+                      (code_point >= 0x1F900 and code_point <= 0x1F9FF)
+            
+            if is_emoji:
+                if current_text:
+                    parts.append(('text', current_text))
+                    current_text = ""
+                current_emoji += char
+            else:
+                if current_emoji:
+                    parts.append(('emoji', current_emoji))
+                    current_emoji = ""
+                current_text += char
+        
+        # Add remaining parts
+        if current_text:
+            parts.append(('text', current_text))
+        if current_emoji:
+            parts.append(('emoji', current_emoji))
+        
+        # Render each part and combine
+        surfaces = []
+        total_width = 0
+        max_height = 0
+        
+        for part_type, part_text in parts:
+            if part_type == 'text':
+                surf = self.alert_font.render(part_text, True, color)
+            else:  # emoji
+                surf = self.emoji_font.render(part_text, True, color)
+            surfaces.append(surf)
+            total_width += surf.get_width()
+            max_height = max(max_height, surf.get_height())
+        
+        # Combine surfaces
+        if not surfaces:
+            return self.alert_font.render("", True, color)
+        
+        combined = pygame.Surface((total_width, max_height), pygame.SRCALPHA)
+        x_offset = 0
+        for surf in surfaces:
+            # Center vertically
+            y_offset = (max_height - surf.get_height()) // 2
+            combined.blit(surf, (x_offset, y_offset))
+            x_offset += surf.get_width()
+        
+        return combined
     
     def _print_comprehensive_monitoring_stats(self, deaths: int, total_energy: float, total_speed: float, avg_age: float):
         """Print comprehensive monitoring statistics to console."""
@@ -2321,8 +2565,8 @@ class Simulation:
             # Convert alert location to screen coordinates
             alert_sx, alert_sy = self.camera.world_to_screen(alert_x, alert_y, screen_width, screen_height)
             
-            # Draw alert text with background
-            alert_text = self.alert_font.render(message, True, color)
+            # Render alert text with emoji support
+            alert_text = self._render_text_with_emoji(message, color)
             text_rect = alert_text.get_rect()
             
             # Position alert at top center of screen
@@ -2386,17 +2630,23 @@ class Simulation:
         info_text = [
             f"Organisms: {len(self.organisms)}",
             f"Food: {len(self.foods)}",
+            f"Total Births: {self.cumulative_stats['total_births']}",
+            f"Total Deaths: {self.cumulative_stats['total_deaths']}",
             f"Zoom: {self.camera.zoom:.2f}",
             f"Terminal Output: {'ON' if self.show_terminal_output else 'OFF'}",
+            f"Event Alerts: {'ON' if self.alerts_enabled else 'OFF'}",
             "SPACE: Pause | F: Add Food | O: Add Organisms",
-            "R: Reset | M: Toggle Terminal | ESC: Exit",
-            "Mouse Wheel: Zoom | Drag: Pan View"
+            "R: Reset | M: Toggle Terminal | A: Toggle Alerts | ESC: Exit",
+            "+/-: Zoom | Arrow Keys: Pan | Mouse Wheel: Zoom | Drag: Pan"
         ]
         y_offset = 10
         for text in info_text:
             surface = self.font.render(text, True, (255, 255, 255))
             self.screen.blit(surface, (10, y_offset))
             y_offset += 25
+        
+        # Draw parameter control buttons
+        self._draw_parameter_controls(screen_width, y_offset)
         
         if self.paused:
             pause_text = self.font.render("PAUSED", True, (255, 0, 0))
