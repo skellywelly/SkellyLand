@@ -2544,6 +2544,20 @@ class Simulation:
         # AI Population Controller Neural Network
         self.ai_controller = PopulationControllerAI()
         self.ai_controller.load_weights()  # Load previously learned weights if available
+
+        # Graph data for bottom panel
+        self.graph_history_size = 200  # Store last 200 data points
+        self.graph_data = {
+            'population': [],
+            'metabolism': [],
+            'flagella': [],
+            'aggression': [],
+            'reproduction': [],
+            'food_count': [],
+            'avg_energy': [],
+        }
+        self.graph_update_timer = 0.0
+        self.graph_update_interval = 0.1  # Update graph every 0.1 seconds
         
         # Statistics counters (reset each interval)
         self.stats = {
@@ -2731,10 +2745,6 @@ class Simulation:
                     self.camera_follow_enabled = False  # Disable auto-follow when manually controlling
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # Left mouse button
-                    # Check if clicking on parameter control buttons
-                    if self._handle_parameter_button_click(event.pos):
-                        continue  # Button was clicked, don't start dragging
-                    
                     self.dragging = True
                     self.last_mouse_pos = event.pos
                     self.camera_follow_enabled = False  # Disable auto-follow when dragging
@@ -2803,7 +2813,7 @@ class Simulation:
                 if hasattr(org, '_death_cause'):
                     death_cause = org._death_cause
                 
-                self._create_alert(f"💀 Death ({death_cause})", (255, 100, 100), org.x, org.y)
+                self._create_alert(f"Death ({death_cause})", (255, 100, 100), org.x, org.y)
                 
                 self.organisms.remove(org)
                 deaths += 1
@@ -2835,7 +2845,7 @@ class Simulation:
                         # Fight event - create alert at midpoint between fighters
                         fight_x = (org.x + org.combat_target.x) / 2
                         fight_y = (org.y + org.combat_target.y) / 2
-                        self._create_alert("⚔️ Fight!", (255, 0, 0), fight_x, fight_y)
+                        self._create_alert("Fight!", (255, 0, 0), fight_x, fight_y)
         
         # Find new organisms (born this frame)
         org_ids_after = {id(org) for org in self.organisms}
@@ -2861,7 +2871,7 @@ class Simulation:
                 self.stats['matings'] += 1
                 self.cumulative_stats['total_matings'] += 1
                 # Birth/Mating event - create alert at birth location
-                self._create_alert("👶 Birth!", (0, 255, 255), new_org.x, new_org.y)
+                self._create_alert("Birth!", (0, 255, 255), new_org.x, new_org.y)
 
         # Check for ecosystem collapse - population below 10 indicates collapse
         if len(self.organisms) < 10:
@@ -2869,7 +2879,7 @@ class Simulation:
             print("🌱 Respawning 40 new organisms to restart the ecosystem...")
 
             # Create alert for collapse
-            self._create_alert("💀 COLLAPSE! Respawning...", (255, 0, 0), WORLD_WIDTH/2, WORLD_HEIGHT/2)
+            self._create_alert("COLLAPSE! Respawning...", (255, 0, 0), WORLD_WIDTH/2, WORLD_HEIGHT/2)
 
             # Clear remaining organisms from collapsed population
             self.organisms.clear()
@@ -2981,6 +2991,30 @@ class Simulation:
             if self.show_terminal_output:
                 print("💾 Saved AI controller weights")
             self.ai_save_timer = 0.0
+
+        # Update graph data
+        self.graph_update_timer += dt
+        if self.graph_update_timer >= self.graph_update_interval:
+            # Calculate current values
+            current_pop = len(self.organisms)
+            current_food = len(self.foods)
+            avg_energy = sum(org.energy for org in self.organisms) / current_pop if current_pop > 0 else 0.0
+
+            # Add data points
+            self.graph_data['population'].append(current_pop)
+            self.graph_data['metabolism'].append(self.metabolism_multiplier)
+            self.graph_data['flagella'].append(self.flagella_impulse_multiplier)
+            self.graph_data['aggression'].append(self.aggression_multiplier)
+            self.graph_data['reproduction'].append(self.reproduction_desire_multiplier)
+            self.graph_data['food_count'].append(current_food)
+            self.graph_data['avg_energy'].append(avg_energy)
+
+            # Limit history size
+            for key in self.graph_data:
+                if len(self.graph_data[key]) > self.graph_history_size:
+                    self.graph_data[key].pop(0)
+
+            self.graph_update_timer = 0.0
     
     def _update_communication_signals(self, dt: float):
         """Update signal propagation between organisms."""
@@ -3027,112 +3061,90 @@ class Simulation:
         # They influence organism behavior in marked areas
         pass  # Implementation would track persistent territory markers in simulation state
     
-    def _draw_parameter_controls(self, screen_width: int, start_y: int):
-        """Draw clickable parameter control buttons."""
-        button_width = 80
-        button_height = 25
-        button_spacing = 10
-        label_width = 150
-        x_start = screen_width - label_width - button_width * 2 - button_spacing * 2 - 20
+    def _draw_ui_panel(self, screen_width: int, screen_height: int):
+        """Draw consolidated UI panel with all text information."""
+        panel_width = 350
+        panel_x = 10
+        panel_y = 10
+        panel_padding = 10
+        line_height = 20
         
-        y = start_y + 10
-        controls = [
-            ("Metabolism", self.metabolism_multiplier, 0.1, 3.0),
-            ("Flagella", self.flagella_impulse_multiplier, 0.1, 3.0),
-            ("Aggression", self.aggression_multiplier, 0.1, 3.0),
-            ("Repro Desire", self.reproduction_desire_multiplier, 0.1, 3.0),
+        # Calculate panel height based on content
+        num_lines = 15  # Approximate number of lines
+        panel_height = num_lines * line_height + panel_padding * 2
+        
+        # Draw panel background
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+        pygame.draw.rect(self.screen, (30, 40, 60), panel_rect)
+        pygame.draw.rect(self.screen, (100, 100, 100), panel_rect, 2)
+        
+        y_offset = panel_y + panel_padding
+        
+        # Current alert (if any)
+        if self.current_alert is not None:
+            message, color, time_remaining, alert_x, alert_y = self.current_alert
+            # Remove any emojis from message
+            clean_message = message.replace("💀", "").replace("⚔️", "").replace("👶", "").replace("🧠", "").replace("📉", "").replace("📈", "").replace("⚖️", "").replace("🔄", "").strip()
+            alert_text = f"Alert: {clean_message}"
+            surface = self.font.render(alert_text, True, color)
+            self.screen.blit(surface, (panel_x + panel_padding, y_offset))
+            y_offset += line_height
+        
+        # Stats section
+        stats_text = [
+            f"Organisms: {len(self.organisms)}",
+            f"Food: {len(self.foods)}",
+            f"Total Births: {self.cumulative_stats['total_births']}",
+            f"Total Deaths: {self.cumulative_stats['total_deaths']}",
         ]
+        for text in stats_text:
+            surface = self.font.render(text, True, (255, 255, 255))
+            self.screen.blit(surface, (panel_x + panel_padding, y_offset))
+            y_offset += line_height
         
-        for label, value, min_val, max_val in controls:
-            # Draw label with auto-adjust indicator if recently changed
-            param_key = label.lower().replace(' ', '_')
-            if param_key == 'repro_desire':
-                param_key = 'reproduction'
-            elif param_key == 'flagella':
-                param_key = 'flagella_impulse'
-
-            recently_changed = (param_key in self.last_parameter_changes and
-                              self.total_time - self.last_parameter_changes[param_key] < 3.0)
-
-            if recently_changed:
-                label_surface = self.font.render(f"{label}: {value:.2f} 🔄", True, (100, 255, 100))
-            else:
-                label_surface = self.font.render(f"{label}: {value:.2f}", True, (255, 255, 255))
-            self.screen.blit(label_surface, (x_start, y))
-            
-            # Draw - button
-            minus_rect = pygame.Rect(x_start + label_width, y, button_width, button_height)
-            pygame.draw.rect(self.screen, (100, 100, 100), minus_rect)
-            pygame.draw.rect(self.screen, (255, 255, 255), minus_rect, 2)
-            minus_text = self.font.render("-", True, (255, 255, 255))
-            text_x = minus_rect.centerx - minus_text.get_width() // 2
-            text_y = minus_rect.centery - minus_text.get_height() // 2
-            self.screen.blit(minus_text, (text_x, text_y))
-            
-            # Draw + button
-            plus_rect = pygame.Rect(x_start + label_width + button_width + button_spacing, y, button_width, button_height)
-            pygame.draw.rect(self.screen, (100, 100, 100), plus_rect)
-            pygame.draw.rect(self.screen, (255, 255, 255), plus_rect, 2)
-            plus_text = self.font.render("+", True, (255, 255, 255))
-            text_x = plus_rect.centerx - plus_text.get_width() // 2
-            text_y = plus_rect.centery - plus_text.get_height() // 2
-            self.screen.blit(plus_text, (text_x, text_y))
-            
-            y += button_height + 5
+        y_offset += 5  # Spacing
+        
+        # Parameters section
+        current_pop = len(self.organisms)
+        if current_pop < self.target_population_min:
+            status_text = f"Status: Population Low ({current_pop})"
+            status_color = (255, 100, 100)
+        elif current_pop > self.target_population_max:
+            status_text = f"Status: Population High ({current_pop})"
+            status_color = (255, 150, 100)
+        else:
+            status_text = f"Status: Population Stable ({current_pop})"
+            status_color = (100, 255, 100)
+        
+        status_surface = self.font.render(status_text, True, status_color)
+        self.screen.blit(status_surface, (panel_x + panel_padding, y_offset))
+        y_offset += line_height
+        
+        # Parameters
+        param_text = [
+            f"Metabolism: {self.metabolism_multiplier:.2f}",
+            f"Flagella: {self.flagella_impulse_multiplier:.2f}",
+            f"Aggression: {self.aggression_multiplier:.2f}",
+            f"Reproduction: {self.reproduction_desire_multiplier:.2f}",
+        ]
+        for text in param_text:
+            surface = self.font.render(text, True, (255, 255, 255))
+            self.screen.blit(surface, (panel_x + panel_padding, y_offset))
+            y_offset += line_height
+        
+        y_offset += 5  # Spacing
+        
+        # Settings
+        settings_text = [
+            f"Zoom: {self.camera.zoom:.2f}",
+            f"Terminal: {'ON' if self.show_terminal_output else 'OFF'}",
+            f"Alerts: {'ON' if self.alerts_enabled else 'OFF'}",
+        ]
+        for text in settings_text:
+            surface = self.font.render(text, True, (200, 200, 200))
+            self.screen.blit(surface, (panel_x + panel_padding, y_offset))
+            y_offset += line_height
     
-    def _handle_parameter_button_click(self, pos: Tuple[int, int]) -> bool:
-        """Handle clicks on parameter control buttons. Returns True if a button was clicked."""
-        button_width = 80
-        button_height = 25
-        button_spacing = 10
-        label_width = 150
-        screen_width = self.screen.get_width()
-        x_start = screen_width - label_width - button_width * 2 - button_spacing * 2 - 20
-        
-        # Calculate start_y (same as in _draw_parameter_controls)
-        info_lines = 9  # Number of info text lines
-        start_y = 10 + info_lines * 25 + 10
-        
-        controls = [
-            ("metabolism", self.metabolism_multiplier, 0.1, 3.0),
-            ("flagella", self.flagella_impulse_multiplier, 0.1, 3.0),
-            ("aggression", self.aggression_multiplier, 0.1, 3.0),
-            ("reproduction_desire", self.reproduction_desire_multiplier, 0.1, 3.0),
-        ]
-        
-        y = start_y
-        for control_name, value, min_val, max_val in controls:
-            # Check - button
-            minus_rect = pygame.Rect(x_start + label_width, y, button_width, button_height)
-            if minus_rect.collidepoint(pos):
-                step = 0.1
-                if control_name == "metabolism":
-                    self.metabolism_multiplier = max(min_val, self.metabolism_multiplier - step)
-                elif control_name == "flagella":
-                    self.flagella_impulse_multiplier = max(min_val, self.flagella_impulse_multiplier - step)
-                elif control_name == "aggression":
-                    self.aggression_multiplier = max(min_val, self.aggression_multiplier - step)
-                elif control_name == "reproduction_desire":
-                    self.reproduction_desire_multiplier = max(min_val, self.reproduction_desire_multiplier - step)
-                return True
-            
-            # Check + button
-            plus_rect = pygame.Rect(x_start + label_width + button_width + button_spacing, y, button_width, button_height)
-            if plus_rect.collidepoint(pos):
-                step = 0.1
-                if control_name == "metabolism":
-                    self.metabolism_multiplier = min(max_val, self.metabolism_multiplier + step)
-                elif control_name == "flagella":
-                    self.flagella_impulse_multiplier = min(max_val, self.flagella_impulse_multiplier + step)
-                elif control_name == "aggression":
-                    self.aggression_multiplier = min(max_val, self.aggression_multiplier + step)
-                elif control_name == "reproduction_desire":
-                    self.reproduction_desire_multiplier = min(max_val, self.reproduction_desire_multiplier + step)
-                return True
-            
-            y += button_height + 5
-        
-        return False
     
     def _render_text_with_emoji(self, text: str, color: Tuple[int, int, int]) -> pygame.Surface:
         """Render text with emoji support by combining text and emoji fonts."""
@@ -3362,6 +3374,74 @@ class Simulation:
             else:
                 print(f"🤖 AI Control: {current_population} organisms - No changes")
 
+    def _draw_graph_panel(self, screen_width: int, screen_height: int):
+        """Draw a graph panel at the bottom of the screen showing various metrics over time."""
+        panel_height = 150
+        panel_y = screen_height - panel_height
+        margin = 10
+        graph_width = screen_width - 2 * margin
+        graph_height = panel_height - 40  # Leave space for labels
+
+        # Draw panel background
+        panel_rect = pygame.Rect(0, panel_y, screen_width, panel_height)
+        pygame.draw.rect(self.screen, (30, 40, 60), panel_rect)
+        pygame.draw.rect(self.screen, (100, 100, 100), panel_rect, 2)
+
+        # Check if we have data
+        if not self.graph_data['population']:
+            return
+
+        # Define graph lines with colors
+        graph_lines = [
+            ('population', (255, 100, 100), 0, 100, 'Population'),
+            ('metabolism', (100, 255, 100), 0.5, 1.5, 'Metabolism'),
+            ('flagella', (100, 150, 255), 0.5, 2.0, 'Flagella'),
+            ('aggression', (255, 200, 100), 0.5, 2.0, 'Aggression'),
+            ('reproduction', (255, 100, 255), 0.3, 2.0, 'Reproduction'),
+            ('food_count', (150, 255, 150), 0, 350, 'Food'),
+            ('avg_energy', (200, 200, 255), 0, 150, 'Avg Energy'),
+        ]
+
+        # Draw each line
+        for line_key, color, min_val, max_val, label in graph_lines:
+            data = self.graph_data[line_key]
+            if len(data) < 2:
+                continue
+
+            # Normalize data to graph height
+            value_range = max_val - min_val
+            if value_range == 0:
+                continue
+
+            points = []
+            for i, value in enumerate(data):
+                x = margin + (i / max(len(data) - 1, 1)) * graph_width
+                normalized = (value - min_val) / value_range
+                normalized = max(0, min(1, normalized))  # Clamp to 0-1
+                y = panel_y + graph_height - (normalized * graph_height)
+                points.append((int(x), int(y)))
+
+            # Draw line
+            if len(points) > 1:
+                pygame.draw.lines(self.screen, color, False, points, 2)
+
+        # Draw labels on the right side
+        label_y = panel_y + 5
+        label_x = screen_width - 120
+        small_font = pygame.font.Font(None, 16)
+        
+        for line_key, color, min_val, max_val, label in graph_lines:
+            if len(self.graph_data[line_key]) > 0:
+                current_val = self.graph_data[line_key][-1]
+                label_text = f"{label}: {current_val:.2f}"
+                label_surface = small_font.render(label_text, True, color)
+                self.screen.blit(label_surface, (label_x, label_y))
+                label_y += 18
+
+        # Draw time axis label
+        time_label = small_font.render("Time →", True, (200, 200, 200))
+        self.screen.blit(time_label, (margin, panel_y + graph_height + 5))
+
     def render(self):
         """Render the simulation."""
         self.screen.fill(BACKGROUND_COLOR)
@@ -3452,87 +3532,16 @@ class Simulation:
                 pygame.draw.rect(self.screen, (0, 255, 0), (bar_x, bar_y, int(bar_width * energy_ratio), bar_height))
         
         # Draw alert if active
-        if self.current_alert is not None:
-            message, color, time_remaining, alert_x, alert_y = self.current_alert
-
-            # Calculate fade based on remaining time (for smooth fade out)
-            # Start at 150 alpha (60% opacity) and fade to 0
-            fade_alpha = min(150, int(time_remaining * 150))  # Fade from 150 to 0
-
-            # Render alert text with emoji support
-            alert_text = self._render_text_with_emoji(message, color)
-            text_rect = alert_text.get_rect()
-
-            # Position alert in top-left corner (less intrusive)
-            alert_x_pos = 20
-            alert_y_pos = 20
-
-            # Create semi-transparent surface with subtle background
-            padding = 3
-            bg_surface = pygame.Surface((text_rect.width + padding * 2, text_rect.height + padding * 2), pygame.SRCALPHA)
-            # Semi-transparent dark background (30% opacity of fade_alpha)
-            bg_alpha = int(fade_alpha * 0.3)
-            bg_surface.fill((0, 0, 0, bg_alpha))
-            
-            # Create text surface with transparency
-            text_surface = pygame.Surface((text_rect.width, text_rect.height), pygame.SRCALPHA)
-            text_surface.fill((0, 0, 0, 0))  # Transparent background
-            text_surface.blit(alert_text, (0, 0))
-            text_surface.set_alpha(fade_alpha)
-            
-            # Blit text onto background
-            bg_surface.blit(text_surface, (padding, padding))
-
-            # Draw the faded alert with background
-            self.screen.blit(bg_surface, (alert_x_pos, alert_y_pos))
-        
-        # Draw UI
-        info_text = [
-            f"Organisms: {len(self.organisms)}",
-            f"Food: {len(self.foods)}",
-            f"Total Births: {self.cumulative_stats['total_births']}",
-            f"Total Deaths: {self.cumulative_stats['total_deaths']}",
-            f"Zoom: {self.camera.zoom:.2f}",
-            f"Terminal Output: {'ON' if self.show_terminal_output else 'OFF'}",
-            f"Event Alerts: {'ON' if self.alerts_enabled else 'OFF'}",
-            "SPACE: Pause | F: Add Food | O: Add Organisms",
-            "R: Reset | M: Toggle Terminal | A: Toggle Alerts | ESC: Exit",
-            "+/-: Zoom | Arrow Keys: Pan | Mouse Wheel: Zoom | Drag: Pan"
-        ]
-        y_offset = 10
-        for text in info_text:
-            surface = self.font.render(text, True, (255, 255, 255))
-            self.screen.blit(surface, (10, y_offset))
-            y_offset += 25
-        
-        # Calculate position for parameter controls (same as in _draw_parameter_controls)
-        button_width = 80
-        button_spacing = 10
-        label_width = 150
-        x_start = screen_width - label_width - button_width * 2 - button_spacing * 2 - 20
-
-        # Draw parameter control buttons
-        self._draw_parameter_controls(screen_width, y_offset)
-
-        # Show population control status with AI indicator
-        current_pop = len(self.organisms)
-        if current_pop < self.target_population_min:
-            status_color = (255, 100, 100)  # Red for low
-            status_text = f"🧠📉 Population: {current_pop} (Low)"
-        elif current_pop > self.target_population_max:
-            status_color = (255, 150, 100)  # Orange for high
-            status_text = f"🧠📈 Population: {current_pop} (High)"
-        else:
-            status_color = (100, 255, 100)  # Green for stable
-            status_text = f"🧠⚖️ Population: {current_pop} (Stable)"
-
-        status_surface = self.font.render(status_text, True, status_color)
-        self.screen.blit(status_surface, (x_start, y_offset - 25))
+        # Draw consolidated UI panel
+        self._draw_ui_panel(screen_width, screen_height)
         
         if self.paused:
             pause_text = self.font.render("PAUSED", True, (255, 0, 0))
             pause_x = screen_width // 2 - pause_text.get_width() // 2
             self.screen.blit(pause_text, (pause_x, 10))
+
+        # Draw graph panel at the bottom
+        self._draw_graph_panel(screen_width, screen_height)
         
         pygame.display.flip()
     
