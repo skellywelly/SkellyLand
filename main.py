@@ -1645,32 +1645,53 @@ class Organism:
                 if self.last_interaction < 0.5 or org.last_interaction < 0.5:
                     continue
                 
+                # Check if organisms can interact (fight or mate) before getting too close
+                can_fight = False
+                can_mate = False
+                
+                # Check if they can fight
+                self._check_overcrowding(organisms)
+                org._check_overcrowding(organisms)
+                self_fight_probability = 1.0 if (hasattr(self, 'neural_fight') and self.neural_fight) else 0.0
+                org_fight_probability = 1.0 if (hasattr(org, 'neural_fight') and org.neural_fight) else 0.0
+                if hasattr(self, 'is_overcrowded') and self.is_overcrowded:
+                    self_fight_probability = min(1.0, self_fight_probability + 0.3)
+                if hasattr(org, 'is_overcrowded') and org.is_overcrowded:
+                    org_fight_probability = min(1.0, org_fight_probability + 0.3)
+                can_fight = (self_fight_probability > 0.7 and org_fight_probability > 0.7)
+                
+                # Check if they can mate
+                min_energy_for_mating = 30.0
+                can_mate = (self.age >= self.dna.min_mating_age and 
+                           org.age >= org.dna.min_mating_age and
+                           self.energy > min_energy_for_mating and
+                           org.energy > min_energy_for_mating and
+                           self.age - self.last_reproduction > 1.2 and
+                           org.age - org.last_reproduction > 1.2)
+                
+                # If they can't interact at all, ignore each other and continue normal behavior
+                if not can_fight and not can_mate:
+                    # Clear any targeting of each other
+                    if hasattr(self, 'target') and self.target == org:
+                        self.target = None
+                    if hasattr(org, 'target') and org.target == self:
+                        org.target = None
+                    # Only push apart if very close (collision distance)
+                    if distance < self.size * 1.2:
+                        if distance > 0:
+                            push_force = 15.0
+                            push_x = (dx / distance) * push_force * dt
+                            push_y = (dy / distance) * push_force * dt
+                            self.x -= push_x
+                            self.y -= push_y
+                            org.x += push_x
+                            org.y += push_y
+                    continue  # Ignore each other and continue looking for food/etc
+                
                 # Neural network decides: fight, mate, run, or chase
                 # Both organisms must be close enough
                 if distance < self.size * 1.8:  # Moderately close = potential interaction
-                    # When organisms meet, they MUST interact - either fight or mate
-                    # Fighting only happens if BOTH want to fight, otherwise default to mating
-                    
-                    # Check for overcrowding - increases fight probability
-                    self._check_overcrowding(organisms)
-                    org._check_overcrowding(organisms)
-                    
-                    # Overcrowding makes organisms more likely to fight
-                    # If overcrowded, increase fight probability
-                    self_fight_probability = 1.0 if (hasattr(self, 'neural_fight') and self.neural_fight) else 0.0
-                    org_fight_probability = 1.0 if (hasattr(org, 'neural_fight') and org.neural_fight) else 0.0
-                    
-                    # Increase fight probability if overcrowded (reduced boost to make fights less common)
-                    if hasattr(self, 'is_overcrowded') and self.is_overcrowded:
-                        self_fight_probability = min(1.0, self_fight_probability + 0.3)  # Reduced boost
-                    if hasattr(org, 'is_overcrowded') and org.is_overcrowded:
-                        org_fight_probability = min(1.0, org_fight_probability + 0.3)  # Reduced boost
-                    
-                    # Check if both organisms want to fight (mutual aggression, including overcrowding boost)
-                    # Higher threshold to make fights rarer - both must strongly want to fight
-                    both_want_fight = (self_fight_probability > 0.7 and org_fight_probability > 0.7)
-                    
-                    if both_want_fight:
+                    if can_fight:
                         # Both want to fight - engage in combat
                         self.in_combat = True
                         self.combat_target = org
@@ -1680,29 +1701,17 @@ class Organism:
                         org.last_interaction = 0.0
                         # Track fight (will be done in Simulation class)
                         return self._fight_organism(org, dt)
-                    else:
-                        # Default to mating (most of the time)
-                        # Only require basic conditions: enough energy, age, and cooldown period
-                        # Ensure parents have enough energy to survive mating (need at least 40 energy to mate safely)
-                        # This accounts for energy cost (up to 18 for 3 offspring) + safety margin
-                        min_energy_for_mating = 30.0  # Moderate energy requirement to prevent overbreeding
-                        # Use DNA-defined minimum mating age for each organism
-                        # Calculate mating viability score (0-1, higher = more likely to mate)
+                    elif can_mate:
+                        # Can mate - proceed with mating
+                        # Calculate mating viability for quality assessment
                         age_ready_self = 1.0 if self.age >= self.dna.min_mating_age else 0.0
                         age_ready_org = 1.0 if org.age >= org.dna.min_mating_age else 0.0
-
                         energy_score_self = min(1.0, self.energy / min_energy_for_mating)
                         energy_score_org = min(1.0, org.energy / min_energy_for_mating)
-
                         cooldown_score_self = min(1.0, (self.age - self.last_reproduction) / 1.2)
                         cooldown_score_org = min(1.0, (org.age - org.last_reproduction) / 1.2)
-
-                        # Hard requirement: both organisms must be at or above minimum mating age
-                        if self.age < self.dna.min_mating_age or org.age < org.dna.min_mating_age:
-                            mating_viability = 0.0  # Cannot mate if too young
-                        else:
-                            mating_viability = (age_ready_self + age_ready_org + energy_score_self + energy_score_org +
-                                              cooldown_score_self + cooldown_score_org) / 6.0
+                        mating_viability = (age_ready_self + age_ready_org + energy_score_self + energy_score_org +
+                                          cooldown_score_self + cooldown_score_org) / 6.0
 
                         # Mate if viability is high enough, or with low probability for moderate viability
                         if mating_viability >= 0.9 or (mating_viability >= 0.6 and random.random() < mating_viability * 0.2):
@@ -1713,10 +1722,9 @@ class Organism:
                             # Track mating (will be done in Simulation class)
                             return None
                         else:
-                            # Can't mate yet (cooldown or low energy) - gentle push to prevent constant collision
-                            # Much gentler push to allow organisms to meet again soon
+                            # Can mate but viability is low - gentle push and continue
                             if distance > 0:
-                                push_force = 10.0  # Much gentler push
+                                push_force = 10.0
                                 push_x = (dx / distance) * push_force * dt
                                 push_y = (dy / distance) * push_force * dt
                                 self.x -= push_x
@@ -1990,13 +1998,42 @@ class Organism:
             new_y = new_y % WORLD_HEIGHT
             new_org = Organism(new_x, new_y, new_dna)
             
-            # Give new organism a random initial velocity
-            # Random direction and speed (0.5 to 2.0 times the parent's average max_speed)
+            # Eject offspring with velocity to separate them from parents and siblings
+            # Calculate direction away from parent center
+            parent_center_x = (self.x + partner.x) / 2
+            parent_center_y = (self.y + partner.y) / 2
+            
+            # Direction from parent center to offspring position
+            dx = new_x - parent_center_x
+            dy = new_y - parent_center_y
+            dist_from_center = math.sqrt(dx * dx + dy * dy)
+            
+            if dist_from_center > 0:
+                # Normalize direction
+                dir_x = dx / dist_from_center
+                dir_y = dy / dist_from_center
+            else:
+                # Fallback to random direction if at center
+                angle = random.uniform(0, 2 * math.pi)
+                dir_x = math.cos(angle)
+                dir_y = math.sin(angle)
+            
+            # Strong ejection velocity to ensure separation
+            # Minimum ejection speed of 50 pixels/second, up to 150 pixels/second
             parent_avg_max_speed = (self.dna.max_speed + partner.dna.max_speed) / 2.0
-            initial_speed = random.uniform(0.5, 2.0) * parent_avg_max_speed
-            initial_angle = random.uniform(0, 2 * math.pi)
-            new_org.vx = math.cos(initial_angle) * initial_speed
-            new_org.vy = math.sin(initial_angle) * initial_speed
+            base_ejection_speed = max(50.0, parent_avg_max_speed * 10.0)  # Strong base speed
+            ejection_speed = base_ejection_speed * random.uniform(1.0, 2.0)  # 50-150 pixels/second
+            
+            # Add some random variation to direction to prevent all going same way
+            angle_variation = random.uniform(-0.3, 0.3)  # ±17 degrees variation
+            cos_var = math.cos(angle_variation)
+            sin_var = math.sin(angle_variation)
+            final_dir_x = dir_x * cos_var - dir_y * sin_var
+            final_dir_y = dir_x * sin_var + dir_y * cos_var
+            
+            # Set ejection velocity
+            new_org.vx = final_dir_x * ejection_speed
+            new_org.vy = final_dir_y * ejection_speed
             
             # Inherit neural network weights with variation for each offspring
             if architectures_compatible:
@@ -2420,11 +2457,37 @@ class Simulation:
         self.foods: List[Food] = []
         self.camera = Camera()
         
-        # Create initial organisms
-        for _ in range(40):
-            x = random.uniform(0, WORLD_WIDTH)
-            y = random.uniform(0, WORLD_HEIGHT)
-            self.organisms.append(Organism(x, y))
+        # Create initial organisms with ejection velocity to prevent clumping
+        spawn_center_x = WORLD_WIDTH / 2
+        spawn_center_y = WORLD_HEIGHT / 2
+        for i in range(40):
+            # Spread in a circle around center
+            angle = (2 * math.pi * i) / 40
+            distance = random.uniform(100, 300)
+            x = spawn_center_x + math.cos(angle) * distance
+            y = spawn_center_y + math.sin(angle) * distance
+            # Wrap around world bounds
+            x = x % WORLD_WIDTH
+            y = y % WORLD_HEIGHT
+            new_org = Organism(x, y)
+            
+            # Eject with velocity away from center
+            dx = x - spawn_center_x
+            dy = y - spawn_center_y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist > 0:
+                dir_x = dx / dist
+                dir_y = dy / dist
+            else:
+                dir_x = math.cos(angle)
+                dir_y = math.sin(angle)
+            
+            # Ejection velocity (40-100 pixels/second)
+            ejection_speed = random.uniform(40.0, 100.0)
+            new_org.vx = dir_x * ejection_speed
+            new_org.vy = dir_y * ejection_speed
+            
+            self.organisms.append(new_org)
         
         # Create initial food
         self._spawn_food(50)  # Reduced initial food count
@@ -2540,11 +2603,43 @@ class Simulation:
             self.foods.append(Food(x, y))
     
     def _add_organisms(self, count: int):
-        """Add new organisms to the simulation."""
-        for _ in range(count):
-            x = random.uniform(0, WORLD_WIDTH)
-            y = random.uniform(0, WORLD_HEIGHT)
-            self.organisms.append(Organism(x, y))
+        """Add new organisms to the simulation with ejection velocity to prevent clumping."""
+        # Find center of existing organisms or use world center
+        if len(self.organisms) > 0:
+            center_x = sum(org.x for org in self.organisms) / len(self.organisms)
+            center_y = sum(org.y for org in self.organisms) / len(self.organisms)
+        else:
+            center_x = WORLD_WIDTH / 2
+            center_y = WORLD_HEIGHT / 2
+        
+        for i in range(count):
+            # Spread in a circle around center
+            angle = (2 * math.pi * i) / count
+            distance = random.uniform(50, 150)
+            x = center_x + math.cos(angle) * distance
+            y = center_y + math.sin(angle) * distance
+            # Wrap around world bounds
+            x = x % WORLD_WIDTH
+            y = y % WORLD_HEIGHT
+            new_org = Organism(x, y)
+            
+            # Eject with velocity away from center
+            dx = x - center_x
+            dy = y - center_y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist > 0:
+                dir_x = dx / dist
+                dir_y = dy / dist
+            else:
+                dir_x = math.cos(angle)
+                dir_y = math.sin(angle)
+            
+            # Ejection velocity (40-100 pixels/second)
+            ejection_speed = random.uniform(40.0, 100.0)
+            new_org.vx = dir_x * ejection_speed
+            new_org.vy = dir_y * ejection_speed
+            
+            self.organisms.append(new_org)
     
     def _reset_simulation(self):
         """Reset the simulation to initial state, including AI weights."""
@@ -2577,11 +2672,37 @@ class Simulation:
         self.population_history.clear()
         self.last_parameter_changes.clear()
 
-        # Create initial organisms
-        for _ in range(40):
-            x = random.uniform(0, WORLD_WIDTH)
-            y = random.uniform(0, WORLD_HEIGHT)
-            self.organisms.append(Organism(x, y))
+        # Create initial organisms with ejection velocity to prevent clumping
+        spawn_center_x = WORLD_WIDTH / 2
+        spawn_center_y = WORLD_HEIGHT / 2
+        for i in range(40):
+            # Spread in a circle around center
+            angle = (2 * math.pi * i) / 40
+            distance = random.uniform(100, 300)
+            x = spawn_center_x + math.cos(angle) * distance
+            y = spawn_center_y + math.sin(angle) * distance
+            # Wrap around world bounds
+            x = x % WORLD_WIDTH
+            y = y % WORLD_HEIGHT
+            new_org = Organism(x, y)
+            
+            # Eject with velocity away from center
+            dx = x - spawn_center_x
+            dy = y - spawn_center_y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist > 0:
+                dir_x = dx / dist
+                dir_y = dy / dist
+            else:
+                dir_x = math.cos(angle)
+                dir_y = math.sin(angle)
+            
+            # Ejection velocity (40-100 pixels/second)
+            ejection_speed = random.uniform(40.0, 100.0)
+            new_org.vx = dir_x * ejection_speed
+            new_org.vy = dir_y * ejection_speed
+            
+            self.organisms.append(new_org)
 
         # Create initial food
         self._spawn_food(100)
@@ -2776,19 +2897,48 @@ class Simulation:
                 # Birth/Mating event - create alert at birth location
                 self._create_alert("👶 Birth!", (0, 255, 255), new_org.x, new_org.y)
 
-        # Check for extinction - population reached zero
-        if len(self.organisms) == 0:
-            print("💀 EXTINCTION EVENT: Population reached zero!")
+        # Check for ecosystem collapse - population below 10 indicates collapse
+        if len(self.organisms) < 10:
+            print(f"💀 ECOSYSTEM COLLAPSE: Population dropped to {len(self.organisms)} organisms!")
             print("🌱 Respawning 40 new organisms to restart the ecosystem...")
 
-            # Create alert for extinction
-            self._create_alert("💀 EXTINCTION! Respawning...", (255, 0, 0), WORLD_WIDTH/2, WORLD_HEIGHT/2)
+            # Create alert for collapse
+            self._create_alert("💀 COLLAPSE! Respawning...", (255, 0, 0), WORLD_WIDTH/2, WORLD_HEIGHT/2)
 
-            # Spawn 40 new organisms
-            for _ in range(40):
-                x = random.uniform(0, WORLD_WIDTH)
-                y = random.uniform(0, WORLD_HEIGHT)
-                self.organisms.append(Organism(x, y))
+            # Clear remaining organisms from collapsed population
+            self.organisms.clear()
+
+            # Spawn 40 new organisms with ejection velocity to spread them out
+            spawn_center_x = WORLD_WIDTH / 2
+            spawn_center_y = WORLD_HEIGHT / 2
+            for i in range(40):
+                # Spread in a circle around center
+                angle = (2 * math.pi * i) / 40
+                distance = random.uniform(50, 150)
+                x = spawn_center_x + math.cos(angle) * distance
+                y = spawn_center_y + math.sin(angle) * distance
+                # Wrap around world bounds
+                x = x % WORLD_WIDTH
+                y = y % WORLD_HEIGHT
+                new_org = Organism(x, y)
+                
+                # Eject with velocity away from center
+                dx = x - spawn_center_x
+                dy = y - spawn_center_y
+                dist = math.sqrt(dx * dx + dy * dy)
+                if dist > 0:
+                    dir_x = dx / dist
+                    dir_y = dy / dist
+                else:
+                    dir_x = math.cos(angle)
+                    dir_y = math.sin(angle)
+                
+                # Ejection velocity (30-80 pixels/second)
+                ejection_speed = random.uniform(30.0, 80.0)
+                new_org.vx = dir_x * ejection_speed
+                new_org.vy = dir_y * ejection_speed
+                
+                self.organisms.append(new_org)
 
             # Add some food to help the new population
             self._spawn_food(50)
