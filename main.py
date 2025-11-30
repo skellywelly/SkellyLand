@@ -2520,8 +2520,15 @@ class PopulationControllerAI:
     def load_weights(self, filename="ai_controller_weights.npy"):
         """Load learned weights from file."""
         try:
-            self.weights = np.load(filename)
-            print(f"Loaded AI weights from {filename}")
+            loaded_weights = np.load(filename)
+            # Check if loaded weights match current architecture
+            if loaded_weights.shape == (self.state_size, self.action_size):
+                self.weights = loaded_weights
+                print(f"Loaded AI weights from {filename}")
+            else:
+                print(f"Saved weights shape {loaded_weights.shape} doesn't match current architecture ({self.state_size}, {self.action_size})")
+                print("Reinitializing with random weights")
+                self.weights = np.random.randn(self.state_size, self.action_size) * 0.1
         except FileNotFoundError:
             print(f"No saved weights found at {filename}, using random initialization")
 
