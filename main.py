@@ -24,9 +24,7 @@ BACKGROUND_COLOR = (20, 30, 50)
 FOOD_COLOR = (100, 200, 100)
 
 # Neural Network Constants
-INPUT_SIZE = 38  # Number of input neurons (sensors) - comprehensive environmental awareness + cooperative behaviors
-
-# Movement Constants
+INPUT_SIZE = 40  # Increased from 38 to include hazard awareness
 MAX_SPEED_CAP = 300.0  # Absolute maximum speed limit for all organisms (pixels per second)
 # OUTPUT_SIZE is now variable: flagella_count + 3 (turn_left, turn_right, reproduction)
 
@@ -159,7 +157,7 @@ class NeuralNetwork:
 class DNA:
     """Digital DNA that describes an organism's characteristics."""
     
-    def __init__(self, parent_dna: Optional['DNA'] = None, parent2_dna: Optional['DNA'] = None):
+    def __init__(self, parent_dna: Optional['DNA'] = None, parent2_dna: Optional['DNA'] = None, mutation_multiplier: float = 1.0):
         if parent_dna is None:
             # Create random DNA for first generation
             self.food_preference = random.uniform(0, 1)  # 0 = herbivore, 1 = carnivore
@@ -211,7 +209,7 @@ class DNA:
                 self._combine_parents(parent_dna, parent2_dna)
             
             # Apply mutations
-            self._mutate()
+            self._mutate(mutation_multiplier)
     
     def _inherit_from_parent(self, parent: 'DNA'):
         """Inherit all traits from a single parent."""
@@ -295,9 +293,9 @@ class DNA:
         self.cooperative_hunting = (parent1.cooperative_hunting + parent2.cooperative_hunting) / 2
         self.cooperative_mating = (parent1.cooperative_mating + parent2.cooperative_mating) / 2
     
-    def _mutate(self):
+    def _mutate(self, multiplier: float = 1.0):
         """Apply random mutations to DNA."""
-        mutation_rate = 0.1  # 10% chance of mutation per trait
+        mutation_rate = 0.1 * multiplier  # Base 10% chance adjusted by multiplier
         
         if random.random() < mutation_rate:
             self.food_preference = np.clip(self.food_preference + random.uniform(-0.2, 0.2), 0, 1)
@@ -415,6 +413,21 @@ class DNA:
         if random.random() < mutation_rate:
             self.cooperative_mating = np.clip(self.cooperative_mating + random.uniform(-0.2, 0.2), 0, 1)
 
+class Hazard:
+    """A dangerous environmental zone spawned by the AI."""
+    def __init__(self, x: float, y: float, radius: float = 100.0, duration: float = 10.0, damage_rate: float = 10.0):
+        self.x = x
+        self.y = y
+        self.radius = radius
+        self.duration = duration
+        self.damage_rate = damage_rate
+        self.age = 0.0
+
+    def update(self, dt: float) -> bool:
+        """Update hazard state. Returns False if hazard should be removed."""
+        self.age += dt
+        return self.age < self.duration
+
 class Food:
     """Food particles in the environment."""
     
@@ -441,10 +454,11 @@ class Food:
             if random.random() < 0.1:  # 10% chance to mutate toxicity
                 self.toxicity = random.uniform(0, 1)
     
-    def update(self, dt: float, foods: List['Food'], world_width: float, world_height: float) -> List['Food']:
+    def update(self, dt: float, foods: List['Food'], world_width: float, world_height: float, growth_multiplier: float = 1.0) -> List['Food']:
         """Update food state and handle reproduction. Returns list of new food."""
         self.age += dt
-        self.reproduction_timer += dt
+        # Apply growth multiplier to reproduction timer (higher multiplier = faster reproduction)
+        self.reproduction_timer += dt * growth_multiplier
         
         new_foods = []
         
@@ -913,6 +927,35 @@ class Organism:
         inputs[29] = cooperative_mating_opportunity  # Cooperative mating opportunity (0-1)
         inputs[30] = self.dna.cooperative_hunting  # DNA cooperativeness for hunting (0-1)
         inputs[31] = self.dna.cooperative_mating  # DNA cooperativeness for mating (0-1)
+
+        # Hazard Awareness Inputs
+        nearest_hazard_dist = 1.0
+        nearest_hazard_angle = 0.0
+        
+        if hasattr(self, 'detected_hazard') and self.detected_hazard:
+             # Calculate distance and angle to known hazard
+             dx = self.detected_hazard.x - self.x
+             dy = self.detected_hazard.y - self.y
+             dist = math.sqrt(dx * dx + dy * dy)
+             normalized_dist = min(dist / self.dna.vision_range, 1.0)
+             angle = math.atan2(dy, dx) - self.angle
+             normalized_angle = angle / math.pi
+             
+             nearest_hazard_dist = normalized_dist
+             nearest_hazard_angle = normalized_angle
+
+        inputs[32] = nearest_hazard_dist # Distance to nearest hazard (1.0 = safe/far)
+        inputs[33] = nearest_hazard_angle # Angle to nearest hazard
+
+        # Remaining slots reserved/padding
+        inputs[34] = 0.0
+        inputs[35] = 0.0
+        inputs[36] = 0.0
+        inputs[37] = 0.0
+        inputs[38] = 0.0
+        inputs[39] = 0.0
+
+        return inputs
         
         # Note: Energy level (inputs[6]) already provides information about fullness
         # The neural network can learn to avoid food when energy is high (close to 1.0)
@@ -1986,7 +2029,8 @@ class Organism:
         for i in range(num_offspring):
             # Each offspring gets a different mix of parents' DNA
             # The DNA._combine_parents method already has randomness, but we can create multiple instances
-            new_dna = DNA(parent_dna=self.dna, parent2_dna=partner.dna)
+            mutation_mult = getattr(self, '_temp_mutation_mult', 1.0)
+            new_dna = DNA(parent_dna=self.dna, parent2_dna=partner.dna, mutation_multiplier=mutation_mult)
             
             # Spread offspring around the mating location
             angle = (2 * math.pi * i) / num_offspring  # Distribute evenly in a circle
@@ -2224,10 +2268,10 @@ class PopulationControllerAI:
 
     def __init__(self):
         # Neural network for parameter control
-        # State: [population, population_trend, metabolism_mult, flagella_mult, aggression_mult, reproduction_mult]
-        # Actions: [metabolism_up/metabolism_down, flagella_up/flagella_down, aggression_up/aggression_down, reproduction_up/reproduction_down]
-        self.state_size = 6  # Current state features
-        self.action_size = 8  # 4 parameters × 2 actions (up/down)
+        # State: [population, trend, metabolism, flagella, aggression, reproduction, food_density, avg_energy, avg_age, divine_energy]
+        # Actions: [params... (12), spawn_manna, spawn_hazard]
+        self.state_size = 10  # Added Divine Energy
+        self.action_size = 14  # Added 2 Divine Powers
 
         # Neural network weights
         self.weights = np.random.randn(self.state_size, self.action_size) * 0.1
@@ -2248,6 +2292,7 @@ class PopulationControllerAI:
     def get_state(self, simulation):
         """Get current state representation."""
         current_pop = len(simulation.organisms)
+        max_pop = 150.0  # Normalize against expected max
 
         # Population trend (change over last minute)
         if len(simulation.population_history) >= 6:
@@ -2255,17 +2300,33 @@ class PopulationControllerAI:
         else:
             trend = 0
 
+        # Food density (ratio of food to organisms, normalized)
+        food_count = len(simulation.foods)
+        food_density = min(2.0, food_count / max(1, current_pop)) / 2.0
+
+        # Average energy level (normalized 0-1)
+        avg_energy = 0.0
+        avg_age = 0.0
+        if current_pop > 0:
+            avg_energy = sum(org.energy for org in simulation.organisms) / (current_pop * 150.0) # 150 is max_energy base
+            avg_age = sum(org.age for org in simulation.organisms) / (current_pop * 100.0) # Normalize age against 100s
+
         # Normalize values
-        pop_norm = current_pop / 100.0  # Normalize to 0-1 range (assuming max ~100)
+        pop_norm = min(1.0, current_pop / max_pop)
         trend_norm = np.tanh(trend / 20.0)  # Normalize trend
+        divine_energy_norm = simulation.divine_energy / 100.0
 
         state = np.array([
-            pop_norm,  # Current population (0-1)
-            trend_norm,  # Population trend (-1 to 1)
-            simulation.metabolism_multiplier / 2.0,  # Current metabolism (normalized)
-            simulation.flagella_impulse_multiplier / 2.0,  # Current flagella power
-            simulation.aggression_multiplier / 2.0,  # Current aggression
-            simulation.reproduction_desire_multiplier / 2.0,  # Current reproduction desire
+            pop_norm,
+            trend_norm,
+            simulation.metabolism_multiplier / 2.0,
+            simulation.flagella_impulse_multiplier / 2.0,
+            simulation.aggression_multiplier / 2.0,
+            simulation.reproduction_desire_multiplier / 2.0,
+            food_density,
+            avg_energy,
+            avg_age,
+            divine_energy_norm
         ])
 
         return state
@@ -2274,16 +2335,28 @@ class PopulationControllerAI:
         """Choose actions for each parameter using epsilon-greedy policy."""
         if np.random.random() < self.epsilon:
             # Random exploration
-            actions = np.random.choice([-1, 0, 1], size=4)  # -1=down, 0=stay, 1=up for each parameter
+            actions = np.random.choice([-1, 0, 1], size=6)  # Parameters
+            # Random powers
+            power_action = random.choice([0, 1, 2]) # 0=None, 1=Manna, 2=Hazard
+            
+            # Combine
+            full_actions = np.zeros(8, dtype=int)
+            full_actions[:6] = actions
+            if power_action == 1: full_actions[6] = 1 # Manna
+            if power_action == 2: full_actions[7] = 1 # Hazard
+            
+            return full_actions
         else:
             # Greedy action selection
             q_values = np.dot(state, self.weights)
 
-            # Convert Q-values to actions for each parameter (pairs of Q-values)
-            actions = np.zeros(4, dtype=int)
-            for i in range(4):  # 4 parameters
-                up_q = q_values[i*2]      # up action
-                down_q = q_values[i*2 + 1]  # down action
+            # Convert Q-values to actions
+            actions = np.zeros(8, dtype=int)
+            
+            # Parameters (indices 0-5)
+            for i in range(6):  
+                up_q = q_values[i*2]      
+                down_q = q_values[i*2 + 1]
 
                 if up_q > down_q:
                     actions[i] = 1   # up
@@ -2291,12 +2364,21 @@ class PopulationControllerAI:
                     actions[i] = -1  # down
                 else:
                     actions[i] = 0   # stay
+            
+            # Powers (indices 6-7 mapped to weights 12, 13)
+            # Threshold based trigger
+            if q_values[12] > 0.5: actions[6] = 1 # Manna
+            if q_values[13] > 0.5: actions[7] = 1 # Hazard
 
-        return actions
+            return actions
 
     def apply_actions(self, simulation, actions):
         """Apply the chosen actions to simulation parameters."""
         adjustment = simulation.parameter_adjustment_rate
+
+        # ... (Parameter adjustments handled below) ...
+        # Actions 0-5 correspond to parameters
+        # Actions 6 (Manna) and 7 (Hazard) are Divine Powers
 
         # Metabolism (index 0)
         if actions[0] == 1:
@@ -2322,14 +2404,41 @@ class PopulationControllerAI:
         elif actions[3] == -1:
             simulation.reproduction_desire_multiplier = max(0.3, simulation.reproduction_desire_multiplier - adjustment)
 
+        # Food Growth (index 4)
+        if actions[4] == 1:
+            simulation.food_growth_multiplier = min(3.0, simulation.food_growth_multiplier + adjustment)
+        elif actions[4] == -1:
+            simulation.food_growth_multiplier = max(0.1, simulation.food_growth_multiplier - adjustment)
+
+        # Mutation Rate (index 5)
+        if actions[5] == 1:
+            simulation.mutation_rate_multiplier = min(3.0, simulation.mutation_rate_multiplier + adjustment)
+        elif actions[5] == -1:
+            simulation.mutation_rate_multiplier = max(0.1, simulation.mutation_rate_multiplier - adjustment)
+
+        # Divine Powers
+        # Manna Rain (Cost: 30)
+        if actions[6] == 1 and simulation.divine_energy >= 30:
+            simulation._spawn_manna_drop()
+            simulation.divine_energy -= 30
+            if simulation.show_terminal_output:
+                print("✨ Divine Power: MANNA RAIN invoked!")
+
+        # Hazard Zone (Cost: 20)
+        if actions[7] == 1 and simulation.divine_energy >= 20:
+            simulation._spawn_hazard_zone()
+            simulation.divine_energy -= 20
+            if simulation.show_terminal_output:
+                print("⚠️ Divine Power: HAZARD ZONE invoked!")
+
         # Track changes for HUD
-        param_names = ['metabolism', 'flagella_impulse', 'aggression', 'reproduction']
+        param_names = ['metabolism', 'flagella_impulse', 'aggression', 'reproduction', 'food_growth', 'mutation_rate']
         for i, param in enumerate(param_names):
             if actions[i] != 0:
                 simulation.last_parameter_changes[param] = simulation.total_time
 
     def calculate_reward(self, simulation, prev_population, new_population):
-        """Calculate reward based on population change."""
+        """Calculate reward based on population change and divine energy usage."""
         reward = 0
 
         # Base reward for population in target range
@@ -2341,6 +2450,11 @@ class PopulationControllerAI:
         # Reward for being close to target (0-1 scale)
         population_reward = max(0, 1.0 - (distance_from_target / max_distance))
         reward += population_reward * 2.0  # Scale up
+
+        # Reward for Divine Energy efficiency
+        # We want the AI to hoard energy and only use it when necessary
+        energy_reward = simulation.divine_energy / 200.0 # Small bonus for keeping energy high
+        reward += energy_reward
 
         # Reward for population stability (not oscillating wildly)
         if prev_population > 0:
@@ -2362,29 +2476,33 @@ class PopulationControllerAI:
         if prev_state is None:
             return
 
-        # Convert actions to Q-value indices
-        action_indices = []
-        for action in actions:
-            if action == 1:  # up
-                action_indices.extend([0, 1])  # Set up Q high, down Q low
-            elif action == -1:  # down
-                action_indices.extend([1, 0])  # Set down Q high, up Q low
-            else:  # stay
-                action_indices.extend([0.5, 0.5])  # Neutral
-
         # Current Q-values
         current_q = np.dot(prev_state, self.weights)
 
         # Next Q-values (target)
         next_q = np.dot(new_state, self.weights)
-        max_next_q = np.max([next_q[i*2:i*2+2] for i in range(4)], axis=1)  # Max Q for each parameter pair
-
+        
+        # Calculate max next Q for parameters (pairs)
+        # First 6 actions (12 weights)
+        max_next_q_params = np.max([next_q[i*2:i*2+2] for i in range(6)], axis=1)
+        
         # Target Q-values
         target_q = current_q.copy()
-        for i in range(4):  # For each parameter
-            if actions[i] != 0:  # Only update if action was taken
+        
+        # Update Parameter Q-Values
+        for i in range(6):  
+            if actions[i] != 0:  
                 action_idx = i * 2 + (0 if actions[i] == 1 else 1)
-                target_q[action_idx] = reward + self.discount_factor * max_next_q[i]
+                target_q[action_idx] = reward + self.discount_factor * max_next_q_params[i]
+        
+        # Update Power Q-Values (indices 12, 13)
+        # Actions[6] corresponds to index 12 (Manna)
+        if actions[6] == 1:
+            target_q[12] = reward + self.discount_factor * max(next_q[12], 0) # Simple max
+        
+        # Actions[7] corresponds to index 13 (Hazard)
+        if actions[7] == 1:
+            target_q[13] = reward + self.discount_factor * max(next_q[13], 0)
 
         # Update weights
         q_error = target_q - current_q
@@ -2475,6 +2593,12 @@ class Simulation:
         # Create initial food
         self._spawn_food(50)  # Reduced initial food count
         
+        # Initialize hazards list and Divine Energy
+        self.hazards = []
+        self.divine_energy = 100.0
+        self.max_divine_energy = 100.0
+        self.divine_regen_rate = 1.0
+
         # UI
         self.font = pygame.font.Font(None, 24)
         # Use bundled fonts for platform independence
@@ -2529,6 +2653,8 @@ class Simulation:
         self.flagella_impulse_multiplier = 1.0
         self.aggression_multiplier = 1.0
         self.reproduction_desire_multiplier = 1.0
+        self.food_growth_multiplier = 1.0  # Controls food reproduction rate
+        self.mutation_rate_multiplier = 1.0  # Controls DNA mutation rate
 
         # Population monitoring and control
         self.population_history = []  # Track population over time
@@ -2553,6 +2679,8 @@ class Simulation:
             'flagella': [],
             'aggression': [],
             'reproduction': [],
+            'food_growth': [],
+            'mutation_rate': [],
             'food_count': [],
             'avg_energy': [],
         }
@@ -2658,6 +2786,8 @@ class Simulation:
         self.flagella_impulse_multiplier = 1.0
         self.aggression_multiplier = 1.0
         self.reproduction_desire_multiplier = 1.0
+        self.food_growth_multiplier = 1.0
+        self.mutation_rate_multiplier = 1.0
 
         # Reset statistics
         for key in self.stats:
@@ -2686,6 +2816,12 @@ class Simulation:
 
         # Create initial food
         self._spawn_food(100)
+
+        # Initialize hazards list and Divine Energy
+        self.hazards = []
+        self.divine_energy = 100.0
+        self.max_divine_energy = 100.0
+        self.divine_regen_rate = 1.0  # Regain 1 energy per second
 
         print("🔄 Simulation completely reset (including AI learning)")
     
@@ -2779,6 +2915,32 @@ class Simulation:
         self.total_time += dt
         self.monitor_timer += dt
         
+        # Update hazards
+        self.hazards = [h for h in self.hazards if h.update(dt)]
+        
+        # Regenerate Divine Energy
+        self.divine_energy = min(self.max_divine_energy, self.divine_energy + self.divine_regen_rate * dt)
+
+        # Apply hazard effects to organisms
+        for org in self.organisms:
+            org.detected_hazard = None # Reset hazard detection
+            for hazard in self.hazards:
+                dx = org.x - hazard.x
+                dy = org.y - hazard.y
+                dist = math.sqrt(dx * dx + dy * dy)
+                
+                # Check for detection
+                if dist < org.dna.vision_range + hazard.radius:
+                    if org.detected_hazard is None or dist < math.sqrt((org.x - org.detected_hazard.x)**2 + (org.y - org.detected_hazard.y)**2):
+                        org.detected_hazard = hazard
+
+                # Check for damage
+                if dist < hazard.radius:
+                    damage = hazard.damage_rate * dt
+                    org.energy -= damage
+                    if org.energy <= 0:
+                        org._death_cause = 'hazard'
+
         # Track organism count before update
         org_count_before = len(self.organisms)
         food_count_before = len(self.foods)
@@ -2802,6 +2964,7 @@ class Simulation:
             org._temp_flagella_mult = self.flagella_impulse_multiplier
             org._temp_aggression_mult = self.aggression_multiplier
             org._temp_reproduction_desire_mult = self.reproduction_desire_multiplier
+            org._temp_mutation_mult = self.mutation_rate_multiplier
             
             if not org.update(self.organisms, self.foods, dt):
                 # Death event - create alert
@@ -2936,7 +3099,7 @@ class Simulation:
         # Update food (reproduction and spreading)
         new_foods = []
         for food in self.foods:
-            offspring = food.update(dt, self.foods, WORLD_WIDTH, WORLD_HEIGHT)
+            offspring = food.update(dt, self.foods, WORLD_WIDTH, WORLD_HEIGHT, self.food_growth_multiplier)
             new_foods.extend(offspring)
             if len(offspring) > 0:
                 self.stats['food_reproduced'] += len(offspring)
@@ -3006,6 +3169,8 @@ class Simulation:
             self.graph_data['flagella'].append(self.flagella_impulse_multiplier)
             self.graph_data['aggression'].append(self.aggression_multiplier)
             self.graph_data['reproduction'].append(self.reproduction_desire_multiplier)
+            self.graph_data['food_growth'].append(self.food_growth_multiplier)
+            self.graph_data['mutation_rate'].append(self.mutation_rate_multiplier)
             self.graph_data['food_count'].append(current_food)
             self.graph_data['avg_energy'].append(avg_energy)
 
@@ -3061,6 +3226,54 @@ class Simulation:
         # They influence organism behavior in marked areas
         pass  # Implementation would track persistent territory markers in simulation state
     
+    def _spawn_hazard_zone(self):
+        """AI God Power: Spawn a dangerous hazard zone."""
+        # Spawn near center of organism mass or random if none
+        if self.organisms:
+            avg_x = sum(org.x for org in self.organisms) / len(self.organisms)
+            avg_y = sum(org.y for org in self.organisms) / len(self.organisms)
+            # Add some randomness
+            x = avg_x + random.uniform(-200, 200)
+            y = avg_y + random.uniform(-200, 200)
+        else:
+            x = random.uniform(0, WORLD_WIDTH)
+            y = random.uniform(0, WORLD_HEIGHT)
+            
+        x = x % WORLD_WIDTH
+        y = y % WORLD_HEIGHT
+        
+        hazard = Hazard(x, y, radius=150.0, duration=15.0, damage_rate=20.0)
+        self.hazards.append(hazard)
+        self._create_alert("⚠️ Hazard Zone Spawned!", (255, 50, 50), x, y)
+
+    def _spawn_manna_drop(self):
+        """AI God Power: Spawn a cluster of high-energy food."""
+        # Spawn near center of organism mass
+        if self.organisms:
+            avg_x = sum(org.x for org in self.organisms) / len(self.organisms)
+            avg_y = sum(org.y for org in self.organisms) / len(self.organisms)
+            # Add some randomness
+            center_x = avg_x + random.uniform(-100, 100)
+            center_y = avg_y + random.uniform(-100, 100)
+        else:
+            center_x = random.uniform(0, WORLD_WIDTH)
+            center_y = random.uniform(0, WORLD_HEIGHT)
+            
+        # Spawn cluster of golden food
+        for _ in range(20):
+            angle = random.uniform(0, 2 * math.pi)
+            dist = random.uniform(0, 100)
+            x = (center_x + math.cos(angle) * dist) % WORLD_WIDTH
+            y = (center_y + math.sin(angle) * dist) % WORLD_HEIGHT
+            
+            food = Food(x, y)
+            food.energy = 50.0  # High energy
+            food.toxicity = 0.0  # Safe
+            # Could add visual distinction later (e.g. color override in Food class or checking energy in render)
+            self.foods.append(food)
+            
+        self._create_alert("✨ Manna Rain!", (255, 215, 0), center_x, center_y)
+
     def _draw_ui_panel(self, screen_width: int, screen_height: int):
         """Draw consolidated UI panel with all text information."""
         panel_width = 350
@@ -3070,15 +3283,19 @@ class Simulation:
         line_height = 20
         
         # Calculate panel height based on content
-        num_lines = 15  # Approximate number of lines
+        num_lines = 18  # Increased to accommodate new parameters
         panel_height = num_lines * line_height + panel_padding * 2
         
-        # Draw panel background
-        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
-        pygame.draw.rect(self.screen, (30, 40, 60), panel_rect)
-        pygame.draw.rect(self.screen, (100, 100, 100), panel_rect, 2)
+        # Create transparent surface for panel
+        panel_surface = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
+        panel_surface.set_alpha(220)  # Semi-transparent (220/255 opacity)
         
-        y_offset = panel_y + panel_padding
+        # Draw panel background on transparent surface
+        panel_rect = pygame.Rect(0, 0, panel_width, panel_height)
+        pygame.draw.rect(panel_surface, (30, 40, 60), panel_rect)
+        pygame.draw.rect(panel_surface, (100, 100, 100), panel_rect, 2)
+        
+        y_offset = panel_padding
         
         # Current alert (if any)
         if self.current_alert is not None:
@@ -3087,7 +3304,7 @@ class Simulation:
             clean_message = message.replace("💀", "").replace("⚔️", "").replace("👶", "").replace("🧠", "").replace("📉", "").replace("📈", "").replace("⚖️", "").replace("🔄", "").strip()
             alert_text = f"Alert: {clean_message}"
             surface = self.font.render(alert_text, True, color)
-            self.screen.blit(surface, (panel_x + panel_padding, y_offset))
+            panel_surface.blit(surface, (panel_padding, y_offset))
             y_offset += line_height
         
         # Stats section
@@ -3099,7 +3316,7 @@ class Simulation:
         ]
         for text in stats_text:
             surface = self.font.render(text, True, (255, 255, 255))
-            self.screen.blit(surface, (panel_x + panel_padding, y_offset))
+            panel_surface.blit(surface, (panel_padding, y_offset))
             y_offset += line_height
         
         y_offset += 5  # Spacing
@@ -3117,7 +3334,7 @@ class Simulation:
             status_color = (100, 255, 100)
         
         status_surface = self.font.render(status_text, True, status_color)
-        self.screen.blit(status_surface, (panel_x + panel_padding, y_offset))
+        panel_surface.blit(status_surface, (panel_padding, y_offset))
         y_offset += line_height
         
         # Parameters
@@ -3126,10 +3343,12 @@ class Simulation:
             f"Flagella: {self.flagella_impulse_multiplier:.2f}",
             f"Aggression: {self.aggression_multiplier:.2f}",
             f"Reproduction: {self.reproduction_desire_multiplier:.2f}",
+            f"Food Growth: {self.food_growth_multiplier:.2f}",
+            f"Mutation Rate: {self.mutation_rate_multiplier:.2f}",
         ]
         for text in param_text:
             surface = self.font.render(text, True, (255, 255, 255))
-            self.screen.blit(surface, (panel_x + panel_padding, y_offset))
+            panel_surface.blit(surface, (panel_padding, y_offset))
             y_offset += line_height
         
         y_offset += 5  # Spacing
@@ -3139,11 +3358,15 @@ class Simulation:
             f"Zoom: {self.camera.zoom:.2f}",
             f"Terminal: {'ON' if self.show_terminal_output else 'OFF'}",
             f"Alerts: {'ON' if self.alerts_enabled else 'OFF'}",
+            f"Divine Energy: {int(self.divine_energy)}/{int(self.max_divine_energy)}"
         ]
         for text in settings_text:
             surface = self.font.render(text, True, (200, 200, 200))
-            self.screen.blit(surface, (panel_x + panel_padding, y_offset))
+            panel_surface.blit(surface, (panel_padding, y_offset))
             y_offset += line_height
+        
+        # Blit the transparent panel to the screen
+        self.screen.blit(panel_surface, (panel_x, panel_y))
     
     
     def _render_text_with_emoji(self, text: str, color: Tuple[int, int, int]) -> pygame.Surface:
@@ -3382,13 +3605,19 @@ class Simulation:
         graph_width = screen_width - 2 * margin
         graph_height = panel_height - 40  # Leave space for labels
 
-        # Draw panel background
-        panel_rect = pygame.Rect(0, panel_y, screen_width, panel_height)
-        pygame.draw.rect(self.screen, (30, 40, 60), panel_rect)
-        pygame.draw.rect(self.screen, (100, 100, 100), panel_rect, 2)
+        # Create transparent surface for panel
+        panel_surface = pygame.Surface((screen_width, panel_height), pygame.SRCALPHA)
+        panel_surface.set_alpha(220)  # Semi-transparent (220/255 opacity)
+
+        # Draw panel background on transparent surface
+        panel_rect = pygame.Rect(0, 0, screen_width, panel_height)
+        pygame.draw.rect(panel_surface, (30, 40, 60), panel_rect)
+        pygame.draw.rect(panel_surface, (100, 100, 100), panel_rect, 2)
 
         # Check if we have data
         if not self.graph_data['population']:
+            # Still blit the empty panel
+            self.screen.blit(panel_surface, (0, panel_y))
             return
 
         # Define graph lines with colors
@@ -3398,11 +3627,13 @@ class Simulation:
             ('flagella', (100, 150, 255), 0.5, 2.0, 'Flagella'),
             ('aggression', (255, 200, 100), 0.5, 2.0, 'Aggression'),
             ('reproduction', (255, 100, 255), 0.3, 2.0, 'Reproduction'),
+            ('food_growth', (50, 255, 200), 0.1, 3.0, 'Food Growth'),
+            ('mutation_rate', (255, 50, 200), 0.1, 3.0, 'Mutation'),
             ('food_count', (150, 255, 150), 0, 350, 'Food'),
             ('avg_energy', (200, 200, 255), 0, 150, 'Avg Energy'),
         ]
 
-        # Draw each line
+        # Draw each line on the panel surface
         for line_key, color, min_val, max_val, label in graph_lines:
             data = self.graph_data[line_key]
             if len(data) < 2:
@@ -3418,15 +3649,15 @@ class Simulation:
                 x = margin + (i / max(len(data) - 1, 1)) * graph_width
                 normalized = (value - min_val) / value_range
                 normalized = max(0, min(1, normalized))  # Clamp to 0-1
-                y = panel_y + graph_height - (normalized * graph_height)
+                y = graph_height - (normalized * graph_height)
                 points.append((int(x), int(y)))
 
-            # Draw line
+            # Draw line on panel surface
             if len(points) > 1:
-                pygame.draw.lines(self.screen, color, False, points, 2)
+                pygame.draw.lines(panel_surface, color, False, points, 2)
 
         # Draw labels on the right side
-        label_y = panel_y + 5
+        label_y = 5
         label_x = screen_width - 120
         small_font = pygame.font.Font(None, 16)
         
@@ -3435,12 +3666,15 @@ class Simulation:
                 current_val = self.graph_data[line_key][-1]
                 label_text = f"{label}: {current_val:.2f}"
                 label_surface = small_font.render(label_text, True, color)
-                self.screen.blit(label_surface, (label_x, label_y))
+                panel_surface.blit(label_surface, (label_x, label_y))
                 label_y += 18
 
         # Draw time axis label
         time_label = small_font.render("Time →", True, (200, 200, 200))
-        self.screen.blit(time_label, (margin, panel_y + graph_height + 5))
+        panel_surface.blit(time_label, (margin, graph_height + 5))
+
+        # Blit the transparent panel to the screen
+        self.screen.blit(panel_surface, (0, panel_y))
 
     def render(self):
         """Render the simulation."""
@@ -3471,9 +3705,22 @@ class Simulation:
                     pygame.draw.circle(self.screen, FOOD_COLOR, (sx, sy), int(food.size * self.camera.zoom))
         
         # Draw organisms
+        champion_org = None
+        if self.organisms:
+            # Find the "Champion" (based on age, energy, children)
+            # Simple heuristic: oldest organism with good energy is the champion
+            champion_org = max(self.organisms, key=lambda o: o.age * 0.5 + o.energy * 0.1)
+
         for org in self.organisms:
             sx, sy = self.camera.world_to_screen(org.x, org.y, screen_width, screen_height)
             if -50 < sx < screen_width + 50 and -50 < sy < screen_height + 50:
+                # Draw champion halo
+                if org is champion_org:
+                    # Gold pulsating halo
+                    pulse = (math.sin(pygame.time.get_ticks() * 0.005) + 1) * 0.5  # 0 to 1
+                    halo_size = int((org.size * 1.5 + pulse * 5) * self.camera.zoom)
+                    pygame.draw.circle(self.screen, (255, 215, 0, 100), (sx, sy), halo_size, 2)
+
                 # Draw flagella first (behind organism)
                 flagella_points_list = org.get_flagella_points()
                 flagella_color = tuple(max(0, min(255, c - 30)) for c in org.color)  # Slightly darker than body
@@ -3532,6 +3779,21 @@ class Simulation:
                 pygame.draw.rect(self.screen, (0, 255, 0), (bar_x, bar_y, int(bar_width * energy_ratio), bar_height))
         
         # Draw alert if active
+        # Draw hazards
+        for hazard in self.hazards:
+            sx, sy = self.camera.world_to_screen(hazard.x, hazard.y, screen_width, screen_height)
+            radius = int(hazard.radius * self.camera.zoom)
+            
+            # Draw semi-transparent red circle
+            hazard_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(hazard_surface, (255, 50, 50, 100), (radius, radius), radius)
+            # Pulsing effect
+            pulse = (math.sin(pygame.time.get_ticks() * 0.01) + 1) * 0.5
+            inner_radius = int(radius * (0.8 + pulse * 0.2))
+            pygame.draw.circle(hazard_surface, (255, 0, 0, 150), (radius, radius), inner_radius, 2)
+            
+            self.screen.blit(hazard_surface, (sx - radius, sy - radius))
+
         # Draw consolidated UI panel
         self._draw_ui_panel(screen_width, screen_height)
         
