@@ -1455,51 +1455,72 @@ class Organism:
         partner.last_mate_quality = (self.energy / self.max_energy * 0.8 + self_speed_norm * 0.6 + self_complexity * 0.6) / 2.0
         partner.last_mated = True
         
-        # Sexual reproduction
-        new_dna = DNA(parent_dna=self.dna, parent2_dna=partner.dna)
-        new_x = (self.x + partner.x) / 2 + random.uniform(-30, 30)
-        new_y = (self.y + partner.y) / 2 + random.uniform(-30, 30)
-        new_org = Organism(new_x, new_y, new_dna)
+        # Sexual reproduction - produce multiple offspring (1-3) with different DNA mixes
+        # Number of offspring based on parents' energy and reproduction desire
+        energy_factor = (self.energy / self.max_energy + partner.energy / partner.max_energy) / 2.0
+        desire_factor = (self.dna.reproduction_desire + partner.dna.reproduction_desire) / 2.0
+        # Higher energy and desire = more offspring (1-3)
+        num_offspring = random.choices([1, 2, 3], weights=[0.4, 0.4, 0.2 + energy_factor * 0.3 + desire_factor * 0.3])[0]
         
-        # Inherit neural network weights (average of parents)
-        # Note: Output sizes may differ if flagella counts differ
+        # Get parent weights once for reuse
         parent1_weights = self.brain.get_weights_copy()
         parent2_weights = partner.brain.get_weights_copy()
+        architectures_compatible = (len(parent1_weights) == len(parent2_weights) and 
+                                   all(w1.shape[0] == w2.shape[0] for w1, w2 in zip(parent1_weights, parent2_weights)))
         
-        # Check if architectures are compatible (same number of layers and hidden layer sizes)
-        if (len(parent1_weights) == len(parent2_weights) and 
-            all(w1.shape[0] == w2.shape[0] for w1, w2 in zip(parent1_weights, parent2_weights))):
-            # Average weights - handle different output sizes by using the child's output size
-            averaged_weights = []
-            for i, (w1, w2) in enumerate(zip(parent1_weights, parent2_weights)):
-                if i == len(parent1_weights) - 1:  # Last layer (output layer)
-                    # Output layer may have different sizes - use child's output size
-                    child_output_size = new_org.brain.output_size
-                    # Take average of matching dimensions, pad/truncate if needed
-                    min_output = min(w1.shape[1], w2.shape[1], child_output_size)
-                    avg_output = np.zeros((w1.shape[0], child_output_size))
-                    avg_output[:, :min_output] = (w1[:, :min_output] + w2[:, :min_output]) / 2.0
-                    # If child needs more outputs, use average of available
-                    if child_output_size > min_output:
-                        if w1.shape[1] >= child_output_size:
-                            avg_output[:, min_output:] = w1[:, min_output:child_output_size]
-                        elif w2.shape[1] >= child_output_size:
-                            avg_output[:, min_output:] = w2[:, min_output:child_output_size]
-                    averaged_weights.append(avg_output)
-                else:
-                    # Hidden layers - should match
-                    averaged_weights.append((w1 + w2) / 2.0)
-            new_org.brain.weights = averaged_weights
-            new_org.brain.mutate_weights(0.05)  # Small mutation
-        else:
-            # If architectures don't match, just use child's randomly initialized weights
-            pass
+        # Create multiple offspring, each with a different DNA mix
+        for i in range(num_offspring):
+            # Each offspring gets a different mix of parents' DNA
+            # The DNA._combine_parents method already has randomness, but we can create multiple instances
+            new_dna = DNA(parent_dna=self.dna, parent2_dna=partner.dna)
+            
+            # Spread offspring around the mating location
+            angle = (2 * math.pi * i) / num_offspring  # Distribute evenly in a circle
+            distance = random.uniform(20, 50)  # Distance from center
+            new_x = (self.x + partner.x) / 2 + math.cos(angle) * distance
+            new_y = (self.y + partner.y) / 2 + math.sin(angle) * distance
+            new_org = Organism(new_x, new_y, new_dna)
+            
+            # Inherit neural network weights with variation for each offspring
+            if architectures_compatible:
+                # Create varied weight combinations for each offspring
+                # Mix ratio varies per offspring (0.3-0.7 instead of always 0.5)
+                mix_ratio = random.uniform(0.3, 0.7)  # Different mix for each offspring
+                averaged_weights = []
+                for j, (w1, w2) in enumerate(zip(parent1_weights, parent2_weights)):
+                    if j == len(parent1_weights) - 1:  # Last layer (output layer)
+                        # Output layer may have different sizes - use child's output size
+                        child_output_size = new_org.brain.output_size
+                        # Take weighted average of matching dimensions
+                        min_output = min(w1.shape[1], w2.shape[1], child_output_size)
+                        avg_output = np.zeros((w1.shape[0], child_output_size))
+                        # Weighted mix instead of 50/50
+                        avg_output[:, :min_output] = w1[:, :min_output] * mix_ratio + w2[:, :min_output] * (1 - mix_ratio)
+                        # If child needs more outputs, use from parent with more weight
+                        if child_output_size > min_output:
+                            if w1.shape[1] >= child_output_size:
+                                avg_output[:, min_output:] = w1[:, min_output:child_output_size]
+                            elif w2.shape[1] >= child_output_size:
+                                avg_output[:, min_output:] = w2[:, min_output:child_output_size]
+                        averaged_weights.append(avg_output)
+                    else:
+                        # Hidden layers - weighted mix
+                        averaged_weights.append(w1 * mix_ratio + w2 * (1 - mix_ratio))
+                new_org.brain.weights = averaged_weights
+                # Vary mutation rate per offspring
+                mutation_rate = random.uniform(0.03, 0.08)  # Different mutation for each
+                new_org.brain.mutate_weights(mutation_rate)
+            else:
+                # If architectures don't match, just use child's randomly initialized weights
+                pass
+            
+            organisms.append(new_org)
         
-        organisms.append(new_org)
-        
-        # Both parents lose energy (but survive)
-        self.energy -= 25
-        partner.energy -= 25
+        # Both parents lose energy proportional to number of offspring (but survive)
+        energy_cost_per_offspring = 20
+        total_energy_cost = energy_cost_per_offspring * num_offspring
+        self.energy -= total_energy_cost / 2  # Split cost between parents
+        partner.energy -= total_energy_cost / 2
         self.last_reproduction = self.age
         partner.last_reproduction = partner.age
     
@@ -1626,6 +1647,12 @@ class Camera:
         self.x += (target_x - self.x) * 0.05
         self.y += (target_y - self.y) * 0.05
     
+    def move_to(self, target_x: float, target_y: float, speed: float = 0.1):
+        """Move camera to a specific location (for event alerts)."""
+        # Faster movement for event alerts
+        self.x += (target_x - self.x) * speed
+        self.y += (target_y - self.y) * speed
+    
     def move(self, dx: float, dy: float):
         """Move camera by world space delta."""
         self.x += dx
@@ -1679,6 +1706,14 @@ class Simulation:
         
         # UI
         self.font = pygame.font.Font(None, 24)
+        self.alert_font = pygame.font.Font(None, 36)
+        
+        # Alert system for major events
+        self.current_alert = None  # (message, color, time_remaining, location_x, location_y)
+        self.alert_duration = 3.0  # Show alert for 3 seconds
+        self.camera_following_event = False  # Whether camera is following an event
+        self.event_target_x = None
+        self.event_target_y = None
         self.paused = False
         
         # Mouse dragging
@@ -1691,6 +1726,7 @@ class Simulation:
         self.monitor_interval = 2.0  # Print stats every 2 seconds
         self.frame_count = 0
         self.total_time = 0.0
+        self.show_terminal_output = False  # Toggle for terminal monitoring output (off by default)
         
         # Statistics counters (reset each interval)
         self.stats = {
@@ -1773,6 +1809,10 @@ class Simulation:
                     self._reset_simulation()
                 elif event.key == pygame.K_o:
                     self._add_organisms(10)
+                elif event.key == pygame.K_m:
+                    # Toggle terminal monitoring output
+                    self.show_terminal_output = not self.show_terminal_output
+                    print(f"Terminal output: {'ON' if self.show_terminal_output else 'OFF'}")
                 elif event.key == pygame.K_ESCAPE:
                     self.running = False
             elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -1830,6 +1870,13 @@ class Simulation:
         
         for org in self.organisms[:]:
             if not org.update(self.organisms, self.foods, dt):
+                # Death event - create alert
+                death_cause = 'starvation'
+                if hasattr(org, '_death_cause'):
+                    death_cause = org._death_cause
+                
+                self._create_alert(f"💀 Death ({death_cause})", (255, 100, 100), org.x, org.y)
+                
                 self.organisms.remove(org)
                 deaths += 1
                 self.stats['deaths'] += 1
@@ -1857,6 +1904,10 @@ class Simulation:
                         organisms_in_combat.add(pair)
                         self.stats['fights'] += 1
                         self.cumulative_stats['total_fights'] += 1
+                        # Fight event - create alert at midpoint between fighters
+                        fight_x = (org.x + org.combat_target.x) / 2
+                        fight_y = (org.y + org.combat_target.y) / 2
+                        self._create_alert("⚔️ Fight!", (255, 0, 0), fight_x, fight_y)
         
         # Find new organisms (born this frame)
         org_ids_after = {id(org) for org in self.organisms}
@@ -1876,6 +1927,8 @@ class Simulation:
                 self.stats['births_sexual'] += 1
                 self.stats['matings'] += 1
                 self.cumulative_stats['total_matings'] += 1
+                # Birth/Mating event - create alert at birth location
+                self._create_alert("👶 Birth!", (0, 255, 255), new_org.x, new_org.y)
         
         # Track food eaten
         food_count_after = len(self.foods)
@@ -1910,19 +1963,37 @@ class Simulation:
         if len(self.foods) < 20:  # Lower threshold, spawn less frequently
             self._spawn_food(5)  # Spawn fewer food at a time (will respect cap)
         
-        # Update camera to follow center of mass (only if not dragging)
-        if self.camera_follow_enabled and self.organisms:
+        # Update camera - follow events if alert is active, otherwise follow center of mass
+        if self.current_alert is not None:
+            # Move camera to event location
+            alert_x, alert_y = self.current_alert[3], self.current_alert[4]
+            self.camera.move_to(alert_x, alert_y, speed=0.15)  # Faster movement for events
+        elif self.camera_follow_enabled and self.organisms:
             avg_x = sum(org.x for org in self.organisms) / len(self.organisms)
             avg_y = sum(org.y for org in self.organisms) / len(self.organisms)
             self.camera.update(avg_x, avg_y)
         
-        # Print monitoring stats
+        # Update alert timer
+        if self.current_alert is not None:
+            message, color, time_remaining, x, y = self.current_alert
+            time_remaining -= dt
+            if time_remaining <= 0:
+                self.current_alert = None
+            else:
+                self.current_alert = (message, color, time_remaining, x, y)
+        
+        # Print monitoring stats (if enabled)
         if self.monitor_timer >= self.monitor_interval:
-            self._print_comprehensive_monitoring_stats(deaths, total_energy, total_speed, avg_age)
+            if self.show_terminal_output:
+                self._print_comprehensive_monitoring_stats(deaths, total_energy, total_speed, avg_age)
             # Reset interval stats
             for key in self.stats:
                 self.stats[key] = 0
             self.monitor_timer = 0.0
+    
+    def _create_alert(self, message: str, color: Tuple[int, int, int], x: float, y: float):
+        """Create an alert for a major event and move camera to it."""
+        self.current_alert = (message, color, self.alert_duration, x, y)
     
     def _print_comprehensive_monitoring_stats(self, deaths: int, total_energy: float, total_speed: float, avg_age: float):
         """Print comprehensive monitoring statistics to console."""
@@ -2129,13 +2200,46 @@ class Simulation:
                 pygame.draw.rect(self.screen, (100, 100, 100), (bar_x, bar_y, bar_width, bar_height))
                 pygame.draw.rect(self.screen, (0, 255, 0), (bar_x, bar_y, int(bar_width * energy_ratio), bar_height))
         
+        # Draw alert if active
+        if self.current_alert is not None:
+            message, color, time_remaining, alert_x, alert_y = self.current_alert
+            # Convert alert location to screen coordinates
+            alert_sx, alert_sy = self.camera.world_to_screen(alert_x, alert_y, screen_width, screen_height)
+            
+            # Draw alert text with background
+            alert_text = self.alert_font.render(message, True, color)
+            text_rect = alert_text.get_rect()
+            
+            # Position alert at top center of screen
+            alert_x_pos = screen_width // 2 - text_rect.width // 2
+            alert_y_pos = 50
+            
+            # Draw semi-transparent background
+            bg_rect = pygame.Rect(alert_x_pos - 10, alert_y_pos - 5, text_rect.width + 20, text_rect.height + 10)
+            bg_surface = pygame.Surface((bg_rect.width, bg_rect.height))
+            bg_surface.set_alpha(200)
+            bg_surface.fill((0, 0, 0))
+            self.screen.blit(bg_surface, bg_rect)
+            
+            # Draw alert text
+            self.screen.blit(alert_text, (alert_x_pos, alert_y_pos))
+            
+            # Draw a line from alert text to event location (if on screen)
+            if 0 <= alert_sx < screen_width and 0 <= alert_sy < screen_height:
+                pygame.draw.line(self.screen, color, (alert_x_pos + text_rect.width // 2, alert_y_pos + text_rect.height), 
+                               (alert_sx, alert_sy), 2)
+                # Draw a circle at event location
+                pygame.draw.circle(self.screen, color, (alert_sx, alert_sy), 10, 2)
+        
         # Draw UI
         info_text = [
             f"Organisms: {len(self.organisms)}",
             f"Food: {len(self.foods)}",
             f"Zoom: {self.camera.zoom:.2f}",
+            f"Terminal Output: {'ON' if self.show_terminal_output else 'OFF'}",
             "SPACE: Pause | F: Add Food | O: Add Organisms",
-            "R: Reset | ESC: Exit | Mouse Wheel: Zoom | Drag: Pan View"
+            "R: Reset | M: Toggle Terminal | ESC: Exit",
+            "Mouse Wheel: Zoom | Drag: Pan View"
         ]
         y_offset = 10
         for text in info_text:
@@ -2160,6 +2264,7 @@ class Simulation:
         print("  F - Add Food")
         print("  O - Add Organisms")
         print("  R - Reset Simulation")
+        print("  M - Toggle Terminal Output")
         print("  ESC - Exit")
         print("  Mouse Wheel - Zoom")
         print("  Left Click + Drag - Pan View")
